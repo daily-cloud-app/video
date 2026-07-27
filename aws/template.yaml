@@ -1,0 +1,499 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Daily Cloud Photo Backend
+  Cognito + API Gateway + Lambda + S3 + DynamoDB
+
+# ============================================================
+# Parameters
+# ============================================================
+Parameters:
+  AppName:
+    Type: String
+    Default: daily-cloud-photo
+    Description: Application name (used as prefix for resource names)
+
+  RequireEmail:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Require email address for signup
+
+  RequirePhone:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Require phone number for signup
+
+  PhotosBucketName:
+    Type: String
+    Default: ''
+    Description: S3 bucket name for photos (leave empty for auto-generated name)
+
+  EnableShareUrl:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable share upload URL feature
+
+  EnableLabelSharing:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable label sharing between users
+
+  AppDisplayName:
+    Type: String
+    Default: 'Daily Cloud Photo Backend'
+    Description: Display name returned by the /info endpoint
+
+Conditions:
+  UseCustomBucketName: !Not [!Equals [!Ref PhotosBucketName, '']]
+  EmailRequired: !Equals [!Ref RequireEmail, 'true']
+
+# ============================================================
+# Resources
+# ============================================================
+Resources:
+
+  # -- Cognito --
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AppName}-user-pool'
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: !If [EmailRequired, true, false]
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${AppName}-app-client'
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  # -- S3 (Deploy bucket for Lambda code) --
+
+  DeployBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: CleanupOldZips
+            Status: Enabled
+            ExpirationInDays: 90
+
+  # -- Bootstrap Lambda (fetches source from GitHub, builds ZIPs and Layer) --
+
+  BootstrapFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BootstrapPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub '${DeployBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - lambda:PublishLayerVersion
+                  - lambda:DeleteLayerVersion
+                  - lambda:ListLayerVersions
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${AppName}-pillow'
+
+  BootstrapFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-bootstrap'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 512
+      Role: !GetAtt BootstrapFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          import zipfile
+          import tempfile
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  props = event['ResourceProperties']
+                  bucket = props['Bucket']
+                  lambda_key = props['LambdaKey']
+                  layer_key = props['LayerKey']
+                  layer_name = props['LayerName']
+                  source_files = props['SourceFiles']
+
+                  s3 = boto3.client('s3')
+                  lam = boto3.client('lambda')
+
+                  if event['RequestType'] == 'Delete':
+                      s3.delete_object(Bucket=bucket, Key=lambda_key)
+                      s3.delete_object(Bucket=bucket, Key=layer_key)
+                      # Delete all layer versions
+                      try:
+                          versions = lam.list_layer_versions(LayerName=layer_name)
+                          for v in versions.get('LayerVersions', []):
+                              lam.delete_layer_version(
+                                  LayerName=layer_name,
+                                  VersionNumber=v['Version']
+                              )
+                      except Exception:
+                          pass
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      return
+
+                  tmp = tempfile.mkdtemp()
+
+                  # 1. Download source files from GitHub raw URLs and create lambda.zip
+                  lambda_zip_path = os.path.join(tmp, 'lambda.zip')
+                  with zipfile.ZipFile(lambda_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                      for file_info in source_files:
+                          url = file_info['url']
+                          name = file_info['name']
+                          req = urllib.request.Request(url)
+                          with urllib.request.urlopen(req, timeout=30) as resp:
+                              data = resp.read()
+                          zf.writestr(name, data)
+
+                  with open(lambda_zip_path, 'rb') as f:
+                      s3.put_object(Bucket=bucket, Key=lambda_key, Body=f.read())
+                  print(f'Uploaded lambda.zip to s3://{bucket}/{lambda_key}')
+
+                  # 2. Build Pillow layer
+                  layer_dir = os.path.join(tmp, 'python')
+                  os.makedirs(layer_dir, exist_ok=True)
+                  subprocess.check_call([
+                      'pip', 'install', 'pillow', '-t', layer_dir, '--quiet',
+                      '--platform', 'manylinux2014_x86_64',
+                      '--implementation', 'cp',
+                      '--python-version', '3.12',
+                      '--only-binary=:all:',
+                  ])
+
+                  layer_zip_path = os.path.join(tmp, 'pillow-layer.zip')
+                  with zipfile.ZipFile(layer_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                      for root, dirs, files in os.walk(layer_dir):
+                          for file in files:
+                              filepath = os.path.join(root, file)
+                              arcname = os.path.relpath(filepath, tmp)
+                              zf.write(filepath, arcname)
+
+                  with open(layer_zip_path, 'rb') as f:
+                      layer_data = f.read()
+                      s3.put_object(Bucket=bucket, Key=layer_key, Body=layer_data)
+
+                  # 3. Publish Lambda Layer
+                  response = lam.publish_layer_version(
+                      LayerName=layer_name,
+                      Content={'S3Bucket': bucket, 'S3Key': layer_key},
+                      CompatibleRuntimes=['python3.12'],
+                      Description='Pillow image processing library',
+                  )
+                  layer_arn = response['LayerVersionArn']
+                  print(f'Published layer: {layer_arn}')
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'LambdaKey': lambda_key,
+                      'LayerArn': layer_arn,
+                  })
+              except Exception as e:
+                  print(f'Error: {e}')
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  BootstrapInvocation:
+    Type: Custom::Bootstrap
+    Properties:
+      ServiceToken: !GetAtt BootstrapFunction.Arn
+      Bucket: !Ref DeployBucket
+      LambdaKey: lambda.zip
+      LayerKey: pillow-layer.zip
+      LayerName: !Sub '${AppName}-pillow'
+      SourceFiles:
+        - url: https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/lambda/index.py
+          name: index.py
+        - url: https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/lambda/s3_trigger.py
+          name: s3_trigger.py
+
+  # -- S3 (Photos) --
+
+  PhotosBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: S3TriggerPermission
+    Properties:
+      BucketName: !If
+        - UseCustomBucketName
+        - !Ref PhotosBucketName
+        - !Sub '${AppName}-photos-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: 'users/'
+            Function: !GetAtt S3TriggerFunction.Arn
+
+  # -- DynamoDB --
+
+  PhotosTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    Properties:
+      TableName: !Sub '${AppName}-photos'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: photoId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: photoId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: photoId-index
+          KeySchema:
+            - AttributeName: photoId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # -- IAM Role for Lambda --
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:AdminInitiateAuth
+                  - cognito-idp:AdminGetUser
+                  - cognito-idp:SignUp
+                  - cognito-idp:ConfirmSignUp
+                  - cognito-idp:InitiateAuth
+                  - cognito-idp:GetUser
+                  - cognito-idp:ListUsers
+                Resource: !GetAtt CognitoUserPool.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:HeadObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DeleteItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt PhotosTable.Arn
+                  - !Sub '${PhotosTable.Arn}/index/*'
+
+  # -- Lambda (API) --
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BootstrapInvocation
+    Properties:
+      FunctionName: !Sub '${AppName}-api'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: lambda.zip
+      Environment:
+        Variables:
+          USER_POOL_ID: !Ref CognitoUserPool
+          USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+          PHOTOS_BUCKET: !Ref PhotosBucket
+          PHOTOS_TABLE: !Ref PhotosTable
+          REQUIRE_EMAIL: !Ref RequireEmail
+          REQUIRE_PHONE: !Ref RequirePhone
+          ENABLE_SHARE_URL: !Ref EnableShareUrl
+          ENABLE_LABEL_SHARING: !Ref EnableLabelSharing
+          APP_DISPLAY_NAME: !Ref AppDisplayName
+
+  # Allow API Gateway to invoke Lambda
+  ApiFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*'
+
+  # -- S3 Trigger Lambda --
+
+  S3TriggerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BootstrapInvocation
+    Properties:
+      FunctionName: !Sub '${AppName}-s3-trigger'
+      Runtime: python3.12
+      Handler: s3_trigger.handler
+      Timeout: 60
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref DeployBucket
+        S3Key: lambda.zip
+      Layers:
+        - !GetAtt BootstrapInvocation.LayerArn
+      Environment:
+        Variables:
+          PHOTOS_TABLE: !Ref PhotosTable
+
+  S3TriggerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref S3TriggerFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}'
+
+  # -- API Gateway (HTTP API) --
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AppName}-api'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowHeaders: ['*']
+        AllowMethods: ['*']
+        AllowOrigins: ['*']
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: v1
+      AutoDeploy: true
+
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  HttpApiDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: '$default'
+      Target: !Sub 'integrations/${HttpApiIntegration}'
+
+# ============================================================
+# Outputs
+# ============================================================
+Outputs:
+  ApiEndpoint:
+    Description: API endpoint URL (give this to app users)
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/v1'
+
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref CognitoUserPoolClient
+
+  PhotosBucketName:
+    Description: S3 bucket for photos
+    Value: !Ref PhotosBucket

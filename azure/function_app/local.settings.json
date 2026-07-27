@@ -1,0 +1,19 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "COSMOS_CONNECTION": "",
+    "COSMOS_DATABASE": "dailycloudphoto",
+    "STORAGE_CONNECTION": "",
+    "STORAGE_CONTAINER": "photos",
+    "JWT_SECRET": "dev-secret-change-me-in-production",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "60",
+    "REFRESH_TOKEN_EXPIRE_DAYS": "30",
+    "REQUIRE_EMAIL": "true",
+    "REQUIRE_PHONE": "false",
+    "ENABLE_SHARE_URL": "true",
+    "ENABLE_LABEL_SHARING": "true",
+    "FUNCTION_APP_URL": "http://localhost:7071"
+  }
+}

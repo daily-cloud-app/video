@@ -1,0 +1,9 @@
+functions-framework==3.*
+flask==3.*
+google-cloud-firestore==2.*
+google-cloud-storage==2.*
+firebase-admin==6.*
+google-auth==2.*
+requests==2.*
+Pillow==10.*
+cloudevents==1.*
