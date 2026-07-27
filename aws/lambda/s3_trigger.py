@@ -1,17 +1,17 @@
 """
 S3 Event Trigger:
-1. When a file is PUT, automatically registers metadata in DynamoDB
-2. Generates a thumbnail image (200px) and saves to thumbnails/ prefix
+1. When a video file is PUT, automatically registers metadata in DynamoDB
+2. Generates a thumbnail image (frame extraction at 1s) using ffmpeg and saves to thumbnails/ prefix
 """
-import io
 import os
+import subprocess
+import tempfile
 import urllib.parse
 from datetime import datetime, timezone
 
 import boto3
-from PIL import Image
 
-PHOTOS_TABLE = os.environ.get('PHOTOS_TABLE', '')
+VIDEOS_TABLE = os.environ.get('VIDEOS_TABLE', '')
 THUMBNAIL_SIZE = (200, 200)
 
 dynamodb = boto3.resource('dynamodb')
@@ -19,7 +19,7 @@ s3_client = boto3.client('s3')
 
 
 def handler(event, context):
-    table = dynamodb.Table(PHOTOS_TABLE)
+    table = dynamodb.Table(VIDEOS_TABLE)
 
     for record in event.get('Records', []):
         bucket = record['s3']['bucket']['name']
@@ -38,54 +38,50 @@ def handler(event, context):
         user_id = parts[1]
         filename_part = parts[-1]  # UUID or filename
 
-        # Skip empty objects (folder placeholders) and non-image files
+        # Skip empty objects (folder placeholders) and non-video files
         if size == 0:
             continue
 
         # Infer content type from extension
         ext = filename_part.rsplit('.', 1)[-1].lower() if '.' in filename_part else ''
         content_type_map = {
-            'jpg': 'image/jpeg',
-            'jpeg': 'image/jpeg',
-            'png': 'image/png',
-            'gif': 'image/gif',
-            'webp': 'image/webp',
-            'heic': 'image/heic',
-            'heif': 'image/heic',
+            'mp4': 'video/mp4',
+            'mov': 'video/quicktime',
+            'avi': 'video/x-msvideo',
+            'mkv': 'video/x-matroska',
+            'webm': 'video/webm',
+            '3gp': 'video/3gpp',
         }
         content_type = content_type_map.get(ext, '')
         if not content_type:
-            # No extension: check S3 object content type or default to jpeg
+            # No extension: check S3 object content type or default to mp4
             try:
                 head = s3_client.head_object(Bucket=bucket, Key=key)
-                content_type = head.get('ContentType', 'image/jpeg')
+                content_type = head.get('ContentType', 'video/mp4')
             except Exception:
-                content_type = 'image/jpeg'
-            # Still skip if not an image
-            if not content_type.startswith('image/'):
-                print(f'Skipping non-image file: {key}')
+                content_type = 'video/mp4'
+            # Still skip if not a video
+            if not content_type.startswith('video/'):
+                print(f'Skipping non-video file: {key}')
                 continue
 
-        # Generate thumbnail + extract capture date from EXIF
+        # Generate thumbnail from video frame
         thumbnail_key = f"thumbnails/{key.removeprefix('users/')}"
-        exif_date = None
         try:
-            exif_date = _generate_thumbnail_and_get_date(bucket, key, thumbnail_key)
+            _generate_thumbnail_from_video(bucket, key, thumbnail_key)
             print(f'Thumbnail generated: {thumbnail_key}')
-            if exif_date:
-                print(f'EXIF date: {exif_date}')
         except Exception as e:
             print(f'Thumbnail generation failed for {key}: {e}')
             thumbnail_key = None
 
-        # Capture date: EXIF > path date > current time
-        created_at = exif_date if exif_date else _extract_date_from_path(key)
+        # Capture date: path date > current time (videos don't have EXIF like images)
+        created_at = _extract_date_from_path(key)
 
         # Check if record already exists (app upload creates record before S3 upload)
         # Try filename_part first (app uses UUID as filename)
         existing = table.get_item(Key={'userId': user_id, 'photoId': filename_part})
         if 'Item' in existing:
-            # App-uploaded photo: update existing record
+            # App-uploaded video: update existing record
             photo_id = filename_part
             update_expr = 'SET #s = :status, #sz = :size'
             expr_names = {'#s': 'status', '#sz': 'size'}
@@ -120,44 +116,48 @@ def handler(event, context):
         print(f'Processed: {key} for user {user_id}')
 
 
-def _generate_thumbnail_and_get_date(bucket, source_key, thumbnail_key):
-    """Fetch image from S3, generate thumbnail, and return capture date from EXIF"""
-    response = s3_client.get_object(Bucket=bucket, Key=source_key)
-    image_data = response['Body'].read()
+def _generate_thumbnail_from_video(bucket, source_key, thumbnail_key):
+    """Download video from S3, extract a frame at 1 second mark using ffmpeg, upload as JPEG thumbnail."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        video_path = os.path.join(tmp_dir, 'input_video')
+        thumb_path = os.path.join(tmp_dir, 'thumbnail.jpg')
 
-    img = Image.open(io.BytesIO(image_data))
+        # Download video from S3
+        s3_client.download_file(bucket, source_key, video_path)
 
-    # Extract capture date from EXIF
-    exif_date = None
-    try:
-        exif = img.getexif()
-        if exif:
-            # DateTime (306) or DateTimeOriginal (36867)
-            date_str = exif.get(306) or exif.get(36867)
-            if date_str:
-                # "2026:05:05 14:30:00" → ISO format
-                dt = datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
-                exif_date = dt.replace(tzinfo=timezone.utc).isoformat()
-    except Exception as e:
-        print(f'EXIF extraction failed: {e}')
+        # Extract frame at 1 second using ffmpeg
+        # Use /opt/bin/ffmpeg (Lambda layer path)
+        ffmpeg_path = '/opt/bin/ffmpeg'
+        if not os.path.exists(ffmpeg_path):
+            ffmpeg_path = 'ffmpeg'  # fallback to PATH
 
-    # Generate thumbnail
-    img.thumbnail(THUMBNAIL_SIZE, Image.LANCZOS)
+        cmd = [
+            ffmpeg_path,
+            '-i', video_path,
+            '-ss', '1',
+            '-vframes', '1',
+            '-vf', 'scale=200:-1',
+            '-f', 'image2',
+            '-y',
+            thumb_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
 
-    buffer = io.BytesIO()
-    if img.mode in ('RGBA', 'P'):
-        img = img.convert('RGB')
-    img.save(buffer, format='JPEG', quality=80)
-    buffer.seek(0)
+        if result.returncode != 0:
+            # If 1s fails (video shorter than 1s), try 0s
+            cmd[cmd.index('1')] = '0'
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                raise RuntimeError(f'ffmpeg failed: {result.stderr.decode()[:500]}')
 
-    s3_client.put_object(
-        Bucket=bucket,
-        Key=thumbnail_key,
-        Body=buffer.getvalue(),
-        ContentType='image/jpeg',
-    )
-
-    return exif_date
+        # Upload thumbnail to S3
+        with open(thumb_path, 'rb') as f:
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=thumbnail_key,
+                Body=f.read(),
+                ContentType='image/jpeg',
+            )
 
 
 def _extract_date_from_path(key):

@@ -1,4 +1,4 @@
-# Daily Cloud Photo — Azure Backend
+# Daily Cloud Video — Azure Backend
 
 - [English](#english)
 - [日本語](#日本語)
@@ -16,9 +16,9 @@
 1. Click the **Cloud Shell** button above
 2. Clone and deploy:
    ```bash
-   [ -d photo ] || git clone https://github.com/daily-cloud-app/photo.git
+   [ -d photo ] || git clone https://github.com/daily-cloud-app/video.git
    cd photo && git checkout -- . && git pull --ff-only && cd azure
-   chmod +x deploy.sh && ./deploy.sh daily-cloud-photo-rg japaneast
+   chmod +x deploy.sh && ./deploy.sh daily-cloud-video-rg japaneast
    ```
 3. Copy the API endpoint URL from the output into the app
 
@@ -30,7 +30,7 @@ You can also deploy via the Azure Portal GUI — fill in all parameters through 
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| appName | `dailycloudphoto` | Base name for all resources |
+| appName | `dailycloudvideo` | Base name for all resources |
 | location | Resource group location | Azure region |
 | jwtSecret | (auto-generated) | Secret key for JWT signing |
 | accessTokenExpireMinutes | `60` | Access token lifetime (minutes) |
@@ -39,7 +39,7 @@ You can also deploy via the Azure Portal GUI — fill in all parameters through 
 | requirePhone | `false` | Require phone number for signup |
 | enableShareUrl | `true` | Enable upload URL sharing feature |
 | enableLabelSharing | `true` | Enable label sharing between users |
-| appDisplayName | `Daily Cloud Photo Backend` | Display name shown in the app |
+| appDisplayName | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
 
@@ -52,7 +52,7 @@ You can also deploy via the Azure Portal GUI — fill in all parameters through 
 [![Open in Cloud Shell](https://img.shields.io/badge/Azure-Cloud_Shell-blue?logo=microsoftazure)](https://shell.azure.com)
 
 ```bash
-az group delete --name daily-cloud-photo-rg --yes --no-wait
+az group delete --name daily-cloud-video-rg --yes --no-wait
 ```
 
 ### Architecture
@@ -60,13 +60,13 @@ az group delete --name daily-cloud-photo-rg --yes --no-wait
 ```
 User → Azure Functions (HTTP) → Main Handler (route dispatch)
                                     ├── Custom JWT Auth (bcrypt + PyJWT)
-                                    ├── Blob Storage (photo storage + thumbnails)
+                                    ├── Blob Storage (video storage + thumbnails)
                                     ├── Cosmos DB (metadata)
-                                    └── Blob Trigger Function (EXIF + thumbnail generation)
+                                    └── Blob Trigger Function (frame extraction + thumbnail generation)
 ```
 
 - Single Function App handles all API routes (path-based routing)
-- User photos isolated under `users/{uid}/` prefix
+- User videos isolated under `users/{uid}/` prefix
 - Direct upload to Blob Storage via SAS URLs (no function proxy)
 - Blob trigger automatically extracts EXIF date + generates thumbnails
 
@@ -108,9 +108,9 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 1. 上記の **Cloud Shell** ボタンをクリック
 2. クローンしてデプロイ:
    ```bash
-   [ -d photo ] || git clone https://github.com/daily-cloud-app/photo.git
+   [ -d photo ] || git clone https://github.com/daily-cloud-app/video.git
    cd photo && git checkout -- . && git pull --ff-only && cd azure
-   chmod +x deploy.sh && ./deploy.sh daily-cloud-photo-rg japaneast
+   chmod +x deploy.sh && ./deploy.sh daily-cloud-video-rg japaneast
    ```
 3. 出力された API エンドポイント URL をアプリに入力
 
@@ -122,7 +122,7 @@ GUI でデプロイする場合は、Azure ポータルからパラメータを�
 
 | パラメータ | デフォルト | 説明 |
 |-----------|-----------|------|
-| appName | `dailycloudphoto` | リソース名のベース |
+| appName | `dailycloudvideo` | リソース名のベース |
 | location | リソースグループの場所 | Azure リージョン |
 | jwtSecret | (自動生成) | JWT 署名用シークレット |
 | accessTokenExpireMinutes | `60` | アクセストークン有効期間（分） |
@@ -131,7 +131,7 @@ GUI でデプロイする場合は、Azure ポータルからパラメータを�
 | requirePhone | `false` | サインアップ時に電話番号必須 |
 | enableShareUrl | `true` | アップロード URL 共有機能 |
 | enableLabelSharing | `true` | ラベル共有機能 |
-| appDisplayName | `Daily Cloud Photo Backend` | アプリでの表示名 |
+| appDisplayName | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続
 
@@ -144,7 +144,7 @@ GUI でデプロイする場合は、Azure ポータルからパラメータを�
 [![Open in Cloud Shell](https://img.shields.io/badge/Azure-Cloud_Shell-blue?logo=microsoftazure)](https://shell.azure.com)
 
 ```bash
-az group delete --name daily-cloud-photo-rg --yes --no-wait
+az group delete --name daily-cloud-video-rg --yes --no-wait
 ```
 
 ### アーキテクチャ
@@ -152,13 +152,13 @@ az group delete --name daily-cloud-photo-rg --yes --no-wait
 ```
 ユーザー → Azure Functions (HTTP) → メインハンドラー (ルートディスパッチ)
                                         ├── Custom JWT Auth (bcrypt + PyJWT)
-                                        ├── Blob Storage (写真保存 + サムネイル)
+                                        ├── Blob Storage (動画保存 + サムネイル)
                                         ├── Cosmos DB (メタデータ)
-                                        └── Blob Trigger 関数 (EXIF + サムネイル生成)
+                                        └── Blob Trigger 関数 (フレーム抽出 + サムネイル生成)
 ```
 
 - 全 API を1つの Function App で処理（パスベースルーティング）
-- ユーザーの写真は `users/{uid}/` プレフィックスで分離
+- ユーザーの動画は `users/{uid}/` プレフィックスで分離
 - SAS URL で Blob Storage に直接アップロード（関数を経由しない）
 - Blob トリガーで自動的に EXIF 解析 + サムネイル生成
 

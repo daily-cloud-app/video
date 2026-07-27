@@ -1,8 +1,7 @@
 """
-Daily Cloud Photo — Azure Blob Storage Trigger
-Generates thumbnails and extracts EXIF data when photos are uploaded.
+Daily Cloud Video — Azure Blob Storage Trigger
+Generates thumbnails (frame extraction) when videos are uploaded.
 """
-import io
 import json
 import os
 import logging
@@ -16,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 # ── Environment Variables ──
 COSMOS_CONNECTION = os.environ.get("COSMOS_CONNECTION", "")
-COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "dailycloudphoto")
+COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "dailycloudvideo")
 STORAGE_CONNECTION = os.environ.get("STORAGE_CONNECTION", "")
-STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER", "photos")
+STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER", "videos")
 THUMBNAIL_MAX_SIZE = int(os.environ.get("THUMBNAIL_MAX_SIZE", "400"))
 
 # ── Event Grid Blob Trigger Handler ──
@@ -53,7 +52,7 @@ def handle_blob_event(event: func.EventGridEvent):
         return
 
     # subject から blob パスを抽出
-    # /blobServices/default/containers/photos/blobs/users/{uid}/{year}/{month}/{day}/{filename}
+    # /blobServices/default/containers/videos/blobs/users/{uid}/{year}/{month}/{day}/{filename}
     blob_prefix = f"/blobServices/default/containers/{STORAGE_CONTAINER}/blobs/"
     if not subject.startswith(blob_prefix):
         logger.info(f"Skipping: subject doesn't match container: {subject}")
@@ -83,11 +82,11 @@ def handle_blob_event(event: func.EventGridEvent):
             logger.info(f"Skipping thumbnail blob: {blob_name}")
             return
 
-        # Skip non-image files
+        # Skip non-video files
         ext = filename_part.rsplit('.', 1)[-1].lower() if '.' in filename_part else ''
-        image_extensions = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'}
-        if ext and ext not in image_extensions:
-            logger.info(f"Skipping non-image file: {blob_name}")
+        video_extensions = {'mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'}
+        if ext and ext not in video_extensions:
+            logger.info(f"Skipping non-video file: {blob_name}")
             return
 
     except (IndexError, ValueError) as e:
@@ -99,71 +98,57 @@ def handle_blob_event(event: func.EventGridEvent):
         blob_service = _get_blob_service()
         container_client = blob_service.get_container_client(STORAGE_CONTAINER)
         blob_client = container_client.get_blob_client(blob_name)
-        image_data = blob_client.download_blob().readall()
+        video_data = blob_client.download_blob().readall()
     except Exception as e:
         logger.error(f"Failed to download blob {blob_name}: {e}")
         return
 
-    if not image_data:
+    if not video_data:
         logger.warning(f"Empty blob: {blob_name}")
         return
 
-    # Extract EXIF data and generate thumbnail
-    exif_date = None
+    # Generate thumbnail from video frame using ffmpeg
     thumbnail_data = None
 
     try:
-        from PIL import Image
-        import piexif
+        import subprocess
+        import tempfile
 
-        img = Image.open(io.BytesIO(image_data))
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            video_path = os.path.join(tmp_dir, 'input_video')
+            thumb_path = os.path.join(tmp_dir, 'thumbnail.jpg')
 
-        # Extract EXIF date
-        try:
-            exif_dict = piexif.load(img.info.get("exif", b""))
-            if exif_dict.get("Exif"):
-                date_original = exif_dict["Exif"].get(piexif.ExifIFD.DateTimeOriginal)
-                if date_original:
-                    date_str = date_original.decode("utf-8") if isinstance(date_original, bytes) else str(date_original)
-                    # Parse EXIF date format: "2025:01:01 12:00:00"
-                    exif_date = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
-                    logger.info(f"EXIF date extracted: {exif_date}")
-        except Exception as e:
-            logger.warning(f"EXIF extraction failed for {blob_name}: {e}")
+            # Write video to temp file
+            with open(video_path, 'wb') as f:
+                f.write(video_data)
 
-        # Generate thumbnail
-        try:
-            # Fix orientation based on EXIF
-            try:
-                exif_data = piexif.load(img.info.get("exif", b""))
-                orientation = exif_data.get("0th", {}).get(piexif.ImageIFD.Orientation, 1)
-                if orientation == 3:
-                    img = img.rotate(180, expand=True)
-                elif orientation == 6:
-                    img = img.rotate(270, expand=True)
-                elif orientation == 8:
-                    img = img.rotate(90, expand=True)
-            except Exception:
-                pass
+            # Extract frame at 1 second using ffmpeg
+            cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-ss', '1',
+                '-vframes', '1',
+                '-vf', f'scale={THUMBNAIL_MAX_SIZE}:-1',
+                '-f', 'image2',
+                '-y',
+                thumb_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
 
-            # Resize maintaining aspect ratio
-            img.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE), Image.Resampling.LANCZOS)
+            if result.returncode != 0:
+                # If 1s fails (video shorter than 1s), try 0s
+                cmd[cmd.index('1')] = '0'
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
 
-            # Save thumbnail to bytes
-            thumb_buffer = io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(thumb_buffer, format="JPEG", quality=80, optimize=True)
-            thumbnail_data = thumb_buffer.getvalue()
-            logger.info(f"Thumbnail generated: {len(thumbnail_data)} bytes")
+            if result.returncode == 0 and os.path.exists(thumb_path):
+                with open(thumb_path, 'rb') as f:
+                    thumbnail_data = f.read()
+                logger.info(f"Thumbnail generated: {len(thumbnail_data)} bytes")
+            else:
+                logger.error(f"ffmpeg frame extraction failed for {blob_name}")
 
-        except Exception as e:
-            logger.error(f"Thumbnail generation failed for {blob_name}: {e}")
-
-    except ImportError:
-        logger.warning("Pillow/piexif not available, skipping image processing")
     except Exception as e:
-        logger.error(f"Image processing failed for {blob_name}: {e}")
+        logger.error(f"Video processing failed for {blob_name}: {e}")
 
     # Upload thumbnail to blob storage
     thumbnail_key = None
@@ -198,18 +183,14 @@ def handle_blob_event(event: func.EventGridEvent):
         if items:
             # App-uploaded: update existing record
             item = items[0]
-            update_fields = {"status": "uploaded", "size": len(image_data)}
+            update_fields = {"status": "uploaded", "size": len(video_data)}
 
             if thumbnail_key:
                 update_fields["thumbnailKey"] = thumbnail_key
-            if exif_date:
-                update_fields["exifDate"] = exif_date
-                if not item.get("createdAt") or item.get("status") == "uploading":
-                    update_fields["createdAt"] = exif_date
 
             item.update(update_fields)
             container.upsert_item(body=item)
-            logger.info(f"Cosmos DB updated for photo {filename_part}")
+            logger.info(f"Cosmos DB updated for video {filename_part}")
         else:
             # Direct upload: use path-based ID (sanitize for Cosmos DB)
             raw_id = '/'.join(path_parts[2:])
@@ -221,18 +202,18 @@ def handle_blob_event(event: func.EventGridEvent):
                 "id": photo_id,
                 "userId": user_id,
                 "filename": filename_part,
-                "contentType": "image/jpeg",
+                "contentType": "video/mp4",
                 "blobKey": blob_key,
                 "status": "uploaded",
-                "createdAt": exif_date or _extract_date_from_path(blob_key),
+                "createdAt": _extract_date_from_path(blob_key),
                 "labels": [],
-                "size": len(image_data),
+                "size": len(video_data),
                 "uploadedViaShare": True,
             }
             if thumbnail_key:
                 photo_doc["thumbnailKey"] = thumbnail_key
             container.upsert_item(body=photo_doc)
-            logger.info(f"New photo record created for {photo_id}")
+            logger.info(f"New video record created for {photo_id}")
 
     except Exception as e:
         logger.error(f"Failed to update Cosmos DB for {photo_id}: {e}")

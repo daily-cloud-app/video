@@ -1,4 +1,4 @@
-# Privacy Policy — Daily Cloud Photo
+# Privacy Policy — Daily Cloud Video
 
 - [English](#english)
 - [日本語](#日本語)
@@ -11,7 +11,7 @@ Last updated: June 14, 2026
 
 ### 1. Introduction
 
-Daily Cloud Photo ("the App") is an application for backing up photos to a cloud server that the user sets up and manages themselves.
+Daily Cloud Video ("the App") is an application for backing up videos to a cloud server that the user sets up and manages themselves.
 
 The developer does not collect or manage user data on any developer-operated server. All data is stored in the user's own cloud environment.
 
@@ -137,7 +137,7 @@ This policy may be updated as needed. Significant changes will be communicated t
 
 ### 1. はじめに
 
-Daily Cloud Photo（以下「本アプリ」）は、ユーザーが自身で用意・管理するクラウドサーバーに写真をバックアップするためのアプリケーションです。
+Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用意・管理するクラウドサーバーに動画をバックアップするためのアプリケーションです。
 
 本アプリの開発者（以下「開発者」）はユーザーのデータを自社サーバーで収集・管理することはありません。すべてのデータはユーザー自身が管理するクラウド環境に保存されます。
 

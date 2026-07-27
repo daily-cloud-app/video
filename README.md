@@ -1,6 +1,6 @@
-# Daily Cloud Photo — Infrastructure Samples
+# Daily Cloud Video — Infrastructure Samples
 
-Sample backend implementations for the Daily Cloud Photo app. 
+Sample backend implementations for the Daily Cloud Video app. 
 These are reference implementations to help you get started — feel free to modify or use them as a base for your own setup.
 
 All implementations have been verified with the app for basic operations (signup, upload, cloud sync, label sharing, storage trigger).

@@ -1,24 +1,23 @@
 """
 Cloud Storage Event Trigger (equivalent to AWS S3 trigger):
-1. When a file is uploaded (finalized), registers metadata in Firestore
-2. Generates a thumbnail image (200px) and saves to thumbnails/ prefix
-3. Extracts EXIF capture date from the image
+1. When a video file is uploaded (finalized), registers metadata in Firestore
+2. Generates a thumbnail (frame extraction at 1s) using ffmpeg and saves to thumbnails/ prefix
 
 Triggered by: google.cloud.storage.object.v1.finalized
 """
-import io
 import os
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 
 import functions_framework
 from cloudevents.http import CloudEvent
 from google.cloud import firestore
 from google.cloud import storage as gcs
-from PIL import Image
 
 # ── Configuration ──
-PHOTOS_BUCKET = os.environ.get('PHOTOS_BUCKET', '')
-PHOTOS_COLLECTION = 'photos'
+VIDEOS_BUCKET = os.environ.get('VIDEOS_BUCKET', '')
+VIDEOS_COLLECTION = 'videos'
 THUMBNAIL_SIZE = (200, 200)
 
 # ── GCP Clients ──
@@ -65,7 +64,7 @@ def storage_trigger_handler(cloud_event: CloudEvent):
 
     # Skip empty objects (folder placeholders) and non-image files
     # Check size from Cloud Storage metadata
-    bucket_obj = storage_client.bucket(PHOTOS_BUCKET)
+    bucket_obj = storage_client.bucket(VIDEOS_BUCKET)
     blob = bucket_obj.blob(key)
     blob.reload()
     if blob.size == 0:
@@ -75,40 +74,36 @@ def storage_trigger_handler(cloud_event: CloudEvent):
     # Infer content type from extension
     ext = filename_part.rsplit('.', 1)[-1].lower() if '.' in filename_part else ''
     content_type_map = {
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'webp': 'image/webp',
-        'heic': 'image/heic',
-        'heif': 'image/heic',
+        'mp4': 'video/mp4',
+        'mov': 'video/quicktime',
+        'avi': 'video/x-msvideo',
+        'mkv': 'video/x-matroska',
+        'webm': 'video/webm',
+        '3gp': 'video/3gpp',
     }
     content_type = content_type_map.get(ext, '')
     if not content_type:
         # No extension: check blob content type or default to jpeg
-        content_type = blob.content_type or 'image/jpeg'
-        if not content_type.startswith('image/'):
-            print(f'Skipping non-image file: {key}')
+        content_type = blob.content_type or 'video/mp4'
+        if not content_type.startswith('video/'):
+            print(f'Skipping non-video file: {key}')
             return
 
-    # Generate thumbnail + extract capture date from EXIF
+    # Generate thumbnail from video frame
     thumbnail_key = f"thumbnails/{key.removeprefix('users/')}"
-    exif_date = None
     try:
-        exif_date = _generate_thumbnail_and_get_date(bucket_name, key, thumbnail_key)
+        _generate_thumbnail_from_video(bucket_name, key, thumbnail_key)
         print(f'Thumbnail generated: {thumbnail_key}')
-        if exif_date:
-            print(f'EXIF date: {exif_date}')
     except Exception as e:
         print(f'Thumbnail generation failed for {key}: {e}')
         thumbnail_key = None
 
-    # Capture date: EXIF > path date > current time
-    created_at = exif_date if exif_date else _extract_date_from_path(key)
+    # Capture date: path date > current time (videos don't have EXIF)
+    created_at = _extract_date_from_path(key)
 
     # Check if record already exists (app upload creates record before storage upload)
     doc_id = _doc_id(user_id, filename_part)
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(doc_id)
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(doc_id)
     doc = doc_ref.get()
 
     if doc.exists:
@@ -125,7 +120,7 @@ def storage_trigger_handler(cloud_event: CloudEvent):
         # Direct upload: use full path as photoId to avoid same-name collisions
         photo_id = '/'.join(parts[2:])
         doc_id = _doc_id(user_id, photo_id)
-        doc_ref = db.collection(PHOTOS_COLLECTION).document(doc_id)
+        doc_ref = db.collection(VIDEOS_COLLECTION).document(doc_id)
         item = {
             'userId': user_id,
             'photoId': photo_id,
@@ -145,47 +140,46 @@ def storage_trigger_handler(cloud_event: CloudEvent):
     print(f'Processed: {key} for user {user_id}')
 
 
-def _generate_thumbnail_and_get_date(bucket_name, source_key, thumbnail_key):
+def _generate_thumbnail_from_video(bucket_name, source_key, thumbnail_key):
     """
-    Fetch image from Cloud Storage, generate thumbnail, and return
-    capture date from EXIF metadata.
+    Download video from Cloud Storage, extract a frame at 1 second mark
+    using ffmpeg, and upload as JPEG thumbnail.
     """
     bucket = storage_client.bucket(bucket_name)
 
-    # Download source image
-    source_blob = bucket.blob(source_key)
-    image_data = source_blob.download_as_bytes()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        video_path = os.path.join(tmp_dir, 'input_video')
+        thumb_path = os.path.join(tmp_dir, 'thumbnail.jpg')
 
-    img = Image.open(io.BytesIO(image_data))
+        # Download source video
+        source_blob = bucket.blob(source_key)
+        source_blob.download_to_filename(video_path)
 
-    # Extract capture date from EXIF
-    exif_date = None
-    try:
-        exif = img.getexif()
-        if exif:
-            # DateTime (306) or DateTimeOriginal (36867)
-            date_str = exif.get(306) or exif.get(36867)
-            if date_str:
-                # "2026:05:05 14:30:00" -> ISO format
-                dt = datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
-                exif_date = dt.replace(tzinfo=timezone.utc).isoformat()
-    except Exception as e:
-        print(f'EXIF extraction failed: {e}')
+        # Extract frame at 1 second using ffmpeg
+        cmd = [
+            'ffmpeg',
+            '-i', video_path,
+            '-ss', '1',
+            '-vframes', '1',
+            '-vf', 'scale=200:-1',
+            '-f', 'image2',
+            '-y',
+            thumb_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
 
-    # Generate thumbnail
-    img.thumbnail(THUMBNAIL_SIZE, Image.LANCZOS)
+        if result.returncode != 0:
+            # If 1s fails (video shorter than 1s), try 0s
+            cmd[cmd.index('1')] = '0'
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                raise RuntimeError(f'ffmpeg failed: {result.stderr.decode()[:500]}')
 
-    buffer = io.BytesIO()
-    if img.mode in ('RGBA', 'P'):
-        img = img.convert('RGB')
-    img.save(buffer, format='JPEG', quality=80)
-    buffer.seek(0)
+        # Upload thumbnail to Cloud Storage
+        thumbnail_blob = bucket.blob(thumbnail_key)
+        thumbnail_blob.upload_from_filename(thumb_path, content_type='image/jpeg')
 
-    # Upload thumbnail to Cloud Storage
-    thumbnail_blob = bucket.blob(thumbnail_key)
-    thumbnail_blob.upload_from_file(buffer, content_type='image/jpeg')
-
-    return exif_date
+    return None
 
 
 def _extract_date_from_path(key):

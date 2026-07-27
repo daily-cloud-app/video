@@ -1,4 +1,4 @@
-# Daily Cloud Photo — AWS Backend
+# Daily Cloud Video — AWS Backend
 
 - [English](#english)
 - [日本語](#日本語)
@@ -16,14 +16,14 @@
 1. Click the **CloudShell** button above
 2. Run the following commands:
    ```bash
-   curl -sO https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/template.yaml
-   aws cloudformation deploy --stack-name daily-cloud-photo \
+   curl -sO https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/template.yaml
+   aws cloudformation deploy --stack-name daily-cloud-video \
      --template-file template.yaml \
      --capabilities CAPABILITY_NAMED_IAM
    ```
 3. After completion, get the endpoint URL:
    ```bash
-   aws cloudformation describe-stacks --stack-name daily-cloud-photo \
+   aws cloudformation describe-stacks --stack-name daily-cloud-video \
      --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text
    ```
 4. Copy the API endpoint URL from the output into the app
@@ -36,13 +36,13 @@ You can also deploy via the Console GUI — upload `template.yaml` and fill in p
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| AppName | `daily-cloud-photo` | Prefix for all resource names |
+| AppName | `daily-cloud-video` | Prefix for all resource names |
 | RequireEmail | `true` | Require email for signup |
 | RequirePhone | `false` | Require phone number for signup |
 | PhotosBucketName | (auto-generated) | S3 bucket name for photos |
 | EnableShareUrl | `true` | Enable upload URL sharing feature |
 | EnableLabelSharing | `true` | Enable label sharing between users |
-| AppDisplayName | `Daily Cloud Photo Backend` | Display name shown in the app |
+| AppDisplayName | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
 
@@ -53,14 +53,14 @@ You can also deploy via the Console GUI — upload `template.yaml` and fill in p
 ### Deleting Resources
 
 ```bash
-BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-photo \
+BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-video \
   --query "Stacks[0].Outputs[?OutputKey=='PhotosBucketName'].OutputValue" --output text)
 python3 -c "
 import boto3
 s3 = boto3.resource('s3').Bucket('$BUCKET')
 s3.object_versions.delete()
 "
-aws cloudformation delete-stack --stack-name daily-cloud-photo
+aws cloudformation delete-stack --stack-name daily-cloud-video
 ```
 
 ### Architecture
@@ -68,9 +68,9 @@ aws cloudformation delete-stack --stack-name daily-cloud-photo
 ```
 User → API Gateway (HTTP API) → Lambda (unified handler)
                                     ├── Cognito (auth)
-                                    ├── S3 (photo storage + thumbnails)
+                                    ├── S3 (video storage + thumbnails)
                                     ├── DynamoDB (metadata)
-                                    └── S3 Trigger Lambda (EXIF + thumbnail generation)
+                                    └── S3 Trigger Lambda (frame extraction + thumbnail generation)
 ```
 
 - Single Lambda handles all API routes (path-based routing)
@@ -117,14 +117,14 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 1. 上記の **CloudShell** ボタンをクリック
 2. 以下を実行:
    ```bash
-   curl -sO https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/template.yaml
-   aws cloudformation deploy --stack-name daily-cloud-photo \
+   curl -sO https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/template.yaml
+   aws cloudformation deploy --stack-name daily-cloud-video \
      --template-file template.yaml \
      --capabilities CAPABILITY_NAMED_IAM
    ```
 3. 完了後、エンドポイントを確認:
    ```bash
-   aws cloudformation describe-stacks --stack-name daily-cloud-photo \
+   aws cloudformation describe-stacks --stack-name daily-cloud-video \
      --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text
    ```
 4. 出力された API エンドポイント URL をアプリに入力
@@ -137,13 +137,13 @@ GUI でデプロイする場合は、コンソールから `template.yaml` を�
 
 | パラメータ | デフォルト | 説明 |
 |-----------|-----------|------|
-| AppName | `daily-cloud-photo` | リソース名のプレフィックス |
+| AppName | `daily-cloud-video` | リソース名のプレフィックス |
 | RequireEmail | `true` | サインアップ時にメール必須 |
 | RequirePhone | `false` | サインアップ時に電話番号必須 |
-| PhotosBucketName | (自動生成) | 写真用 S3 バケット名 |
+| PhotosBucketName | (自動生成) | 動画用 S3 バケット名 |
 | EnableShareUrl | `true` | アップロード URL　共有機能 |
 | EnableLabelSharing | `true` | ラベル共有機能 |
-| AppDisplayName | `Daily Cloud Photo Backend` | アプリでの表示名 |
+| AppDisplayName | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続
 
@@ -156,14 +156,14 @@ GUI でデプロイする場合は、コンソールから `template.yaml` を�
 [![Open in CloudShell](https://img.shields.io/badge/AWS-CloudShell-orange?logo=amazonaws)](https://console.aws.amazon.com/cloudshell/home)
 
 ```bash
-BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-photo \
+BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-video \
   --query "Stacks[0].Outputs[?OutputKey=='PhotosBucketName'].OutputValue" --output text)
 python3 -c "
 import boto3
 s3 = boto3.resource('s3').Bucket('$BUCKET')
 s3.object_versions.delete()
 "
-aws cloudformation delete-stack --stack-name daily-cloud-photo
+aws cloudformation delete-stack --stack-name daily-cloud-video
 ```
 
 ### アーキテクチャ
@@ -171,15 +171,15 @@ aws cloudformation delete-stack --stack-name daily-cloud-photo
 ```
 ユーザー → API Gateway (HTTP API) → Lambda (統合ハンドラー)
                                         ├── Cognito (認証)
-                                        ├── S3 (写真保存 + サムネイル)
+                                        ├── S3 (動画保存 + サムネイル)
                                         ├── DynamoDB (メタデータ)
                                         └── S3 Trigger Lambda (EXIF抽出 + サムネイル生成)
 ```
 
 - 全 API を1つの Lambda で処理（パスベースルーティング）
-- ユーザーの写真は `users/{cognito_sub}/` プレフィックスで分離
+- ユーザーの動画は `users/{cognito_sub}/` プレフィックスで分離
 - presigned URL で S3 に直接アップロード（Lambda を経由しない）
-- S3 トリガーで自動的に EXIF 解析 + サムネイル生成 + DynamoDB 登録
+- S3 トリガーで自動的に フレーム抽出 + サムネイル生成 + DynamoDB 登録
 - デプロイ時に Bootstrap Lambda がソースコード取得 ＋ Pillow Layer 自動ビルド
 
 ### コスト目安

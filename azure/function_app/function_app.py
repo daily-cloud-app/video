@@ -1,5 +1,5 @@
 """
-Daily Cloud Photo — Azure Functions Backend (v2 Programming Model)
+Daily Cloud Video — Azure Functions Backend (v2 Programming Model)
 All API endpoints with custom JWT auth, Cosmos DB, and Azure Blob Storage.
 """
 import json
@@ -21,9 +21,9 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 # ── Environment Variables ──
 COSMOS_CONNECTION = os.environ.get("COSMOS_CONNECTION", "")
-COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "dailycloudphoto")
+COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "dailycloudvideo")
 STORAGE_CONNECTION = os.environ.get("STORAGE_CONNECTION", "")
-STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER", "photos")
+STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER", "videos")
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
@@ -33,7 +33,7 @@ REQUIRE_PHONE = os.environ.get("REQUIRE_PHONE", "false").lower() == "true"
 ENABLE_SHARE_URL = os.environ.get("ENABLE_SHARE_URL", "true").lower() == "true"
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get("ENABLE_SHARE_DOWNLOAD_URL", "true").lower() == "true"
 ENABLE_LABEL_SHARING = os.environ.get("ENABLE_LABEL_SHARING", "true").lower() == "true"
-APP_DISPLAY_NAME = os.environ.get("APP_DISPLAY_NAME", "Daily Cloud Photo Backend")
+APP_DISPLAY_NAME = os.environ.get("APP_DISPLAY_NAME", "Daily Cloud Video Backend")
 FUNCTION_APP_URL = os.environ.get("FUNCTION_APP_URL", "")
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def _get_blob_service():
 
 
 def _get_container_client():
-    """Get the photos blob container client."""
+    """Get the videos blob container client."""
     service = _get_blob_service()
     return service.get_container_client(STORAGE_CONTAINER)
 
@@ -178,12 +178,12 @@ def _generate_sas_url(blob_name: str, permission: str = "r", expiry_hours: int =
         account_key=account_key,
         permission=BlobSasPermissions(read=(permission == "r"), write=(permission == "w"), create=(permission == "w")),
         expiry=datetime.now(timezone.utc) + timedelta(hours=expiry_hours),
-        content_type="image/jpeg" if permission == "w" else None,
+        content_type="video/mp4" if permission == "w" else None,
     )
     return f"https://{account_name}.blob.core.windows.net/{STORAGE_CONTAINER}/{blob_name}?{sas_token}"
 
 
-def _generate_upload_sas(blob_name: str, content_type: str = "image/jpeg") -> str:
+def _generate_upload_sas(blob_name: str, content_type: str = "video/mp4") -> str:
     """Generate a SAS URL for uploading a blob."""
     service = _get_blob_service()
     account_name = service.account_name
@@ -474,7 +474,7 @@ def auth_reset_password(req: func.HttpRequest) -> func.HttpResponse:
 # GET /photos
 # ============================================================
 
-@app.route(route="photos", methods=["GET"])
+@app.route(route="videos", methods=["GET"])
 def photos_list(req: func.HttpRequest) -> func.HttpResponse:
     """List photos for the authenticated user."""
     user = _get_user_from_request(req)
@@ -509,7 +509,7 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
         photos.append({
             "id": item["id"],
             "filename": item.get("filename", ""),
-            "contentType": item.get("contentType", "image/jpeg"),
+            "contentType": item.get("contentType", "video/mp4"),
             "size": int(item.get("size", 0)),
             "createdAt": item.get("createdAt", ""),
             "thumbnailUrl": thumbnail_url,
@@ -556,7 +556,7 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
                 photos.append({
                     "id": sp["id"],
                     "filename": sp.get("filename", ""),
-                    "contentType": sp.get("contentType", "image/jpeg"),
+                    "contentType": sp.get("contentType", "video/mp4"),
                     "size": int(sp.get("size", 0)),
                     "createdAt": sp.get("createdAt", ""),
                     "thumbnailUrl": _generate_sas_url(sp_thumb_key) if sp_thumb_key else (_generate_sas_url(sp_blob_key) if sp_blob_key else None),
@@ -572,16 +572,16 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
         photos = photos[:limit]
         next_cursor = photos[-1]["id"] if photos else None
 
-    return _ok(200, {"photos": photos, "nextCursor": next_cursor})
+    return _ok(200, {"videos": photos, "nextCursor": next_cursor})
 
 
 # ============================================================
-# GET /photos/{id}
+# GET /videos/{id}
 # ============================================================
 
-@app.route(route="photos/{photo_id}", methods=["GET"])
+@app.route(route="videos/{photo_id}", methods=["GET"])
 def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
-    """Get a single photo's metadata."""
+    """Get a single video's metadata."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
@@ -599,7 +599,7 @@ def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
     try:
         item = container.read_item(item=photo_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        return _err(404, "Photo not found")
+        return _err(404, "Video not found")
 
     blob_key = item.get("blobKey", "")
     thumbnail_key = item.get("thumbnailKey", "")
@@ -609,7 +609,7 @@ def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
     return _ok(200, {
         "id": photo_id,
         "filename": item.get("filename", ""),
-        "contentType": item.get("contentType", "image/jpeg"),
+        "contentType": item.get("contentType", "video/mp4"),
         "size": int(item.get("size", 0)),
         "createdAt": item.get("createdAt", ""),
         "fullUrl": full_url,
@@ -618,12 +618,12 @@ def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================
-# POST /photos/upload-url
+# POST /videos/upload-url
 # ============================================================
 
-@app.route(route="photos/upload-url", methods=["POST"])
+@app.route(route="videos/upload-url", methods=["POST"])
 def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
-    """Get a presigned URL for uploading a photo."""
+    """Get a presigned URL for uploading a video."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
@@ -631,7 +631,7 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     uid = user["sub"]
     b = _body(req)
     filename = b.get("filename", "")
-    content_type = b.get("contentType", "image/jpeg")
+    content_type = b.get("contentType", "video/mp4")
     created_at = b.get("createdAt", datetime.now(timezone.utc).isoformat())
     photo_id = b.get("photoId", "") or str(uuid.uuid4())
 
@@ -648,7 +648,7 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 
     upload_url = _generate_upload_sas(blob_key, content_type)
 
-    # Store photo metadata in Cosmos DB
+    # Store video metadata in Cosmos DB
     container = _get_container("photos")
     photo_doc = {
         "id": photo_id,
@@ -665,11 +665,11 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     try:
         container.upsert_item(body=photo_doc)
     except Exception as e:
-        logger.error(f"Failed to save photo metadata: {e}")
-        return _err(500, "Failed to create photo record")
+        logger.error(f"Failed to save video metadata: {e}")
+        return _err(500, "Failed to create video record")
 
     return _ok(200, {
-        "photoId": photo_id,
+        "videoId": photo_id,
         "uploadUrl": upload_url,
         "headers": {"x-ms-blob-type": "BlockBlob", "Content-Type": content_type},
         "expiresIn": 3600,
@@ -677,10 +677,10 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================
-# POST /photos/{id}/confirm
+# POST /videos/{id}/confirm
 # ============================================================
 
-@app.route(route="photos/{photo_id}/confirm", methods=["POST"])
+@app.route(route="videos/{photo_id}/confirm", methods=["POST"])
 def photos_confirm(req: func.HttpRequest) -> func.HttpResponse:
     """Confirm that upload to presigned URL is complete."""
     user = _get_user_from_request(req)
@@ -696,7 +696,7 @@ def photos_confirm(req: func.HttpRequest) -> func.HttpResponse:
     try:
         item = container.read_item(item=photo_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        return _err(404, "Photo not found")
+        return _err(404, "Video not found")
 
     # Verify blob exists
     blob_key = item.get("blobKey", "")
@@ -719,12 +719,12 @@ def photos_confirm(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================
-# PUT /photos/{id}/labels
+# PUT /videos/{id}/labels
 # ============================================================
 
-@app.route(route="photos/{photo_id}/labels", methods=["PUT"])
+@app.route(route="videos/{photo_id}/labels", methods=["PUT"])
 def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
-    """Update labels for a photo."""
+    """Update labels for a video."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
@@ -744,7 +744,7 @@ def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
     try:
         item = container.read_item(item=photo_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        return _err(404, "Photo not found")
+        return _err(404, "Video not found")
 
     item["labels"] = labels
     if label_names and isinstance(label_names, dict):
@@ -755,12 +755,12 @@ def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================
-# DELETE /photos/{id}
+# DELETE /videos/{id}
 # ============================================================
 
-@app.route(route="photos/{photo_id}", methods=["DELETE"])
+@app.route(route="videos/{photo_id}", methods=["DELETE"])
 def photos_delete(req: func.HttpRequest) -> func.HttpResponse:
-    """Soft-delete a photo."""
+    """Soft-delete a video."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
@@ -774,21 +774,21 @@ def photos_delete(req: func.HttpRequest) -> func.HttpResponse:
     try:
         item = container.read_item(item=photo_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
-        return _err(404, "Photo not found")
+        return _err(404, "Video not found")
 
     # Soft delete
     item["status"] = "deleted"
     item["deletedAt"] = datetime.now(timezone.utc).isoformat()
     container.upsert_item(body=item)
 
-    return _ok(200, {"message": "Photo deleted."})
+    return _ok(200, {"message": "Video deleted."})
 
 
 # ============================================================
-# POST /photos/share-upload-url
+# POST /videos/share-upload-url
 # ============================================================
 
-@app.route(route="photos/share-upload-url", methods=["POST"])
+@app.route(route="videos/share-upload-url", methods=["POST"])
 def photos_share_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     """Generate a temporary upload page URL for third parties."""
     if not ENABLE_SHARE_URL:
@@ -901,10 +901,10 @@ def upload_page(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ============================================================
-# POST /photos/share-upload
+# POST /videos/share-upload
 # ============================================================
 
-@app.route(route="photos/share-upload", methods=["POST"])
+@app.route(route="videos/share-upload", methods=["POST"])
 def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
     """Get a presigned URL using a share token (no auth required)."""
     if not ENABLE_SHARE_URL:
@@ -913,7 +913,7 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
     b = _body(req)
     token = b.get("token", "")
     filename = b.get("filename", "")
-    content_type = b.get("contentType", "image/jpeg")
+    content_type = b.get("contentType", "video/mp4")
 
     if not token or not filename:
         return _err(400, "token and filename are required")
@@ -949,7 +949,7 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
 
     upload_url = _generate_upload_sas(blob_key, content_type)
 
-    # Create photo record
+    # Create video record
     photo_doc = {
         "id": photo_id,
         "userId": uid,
@@ -968,7 +968,7 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
 
     return _ok(200, {
         "uploadUrl": upload_url,
-        "photoId": photo_id,
+        "videoId": photo_id,
     })
 
 
@@ -1256,7 +1256,7 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Upload</title>
+    <title>Video Upload</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
@@ -1284,13 +1284,13 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
 </head>
 <body>
     <div class="card">
-        <h1>Upload Photos</h1>
-        <p class="subtitle">Select or drop images to upload. This link expires in {expires_hours} hours.</p>
+        <h1>Upload Videos</h1>
+        <p class="subtitle">Select or drop videos to upload. This link expires in {expires_hours} hours.</p>
         <div class="upload-area" id="dropArea" onclick="document.getElementById('fileInput').click()">
             <div class="icon">&#9729;&#65039;</div>
             <p>Drag & Drop</p>
             <p>or <span class="browse">Browse Files</span></p>
-            <input type="file" id="fileInput" accept="image/*" multiple>
+            <input type="file" id="fileInput" accept="video/*" multiple>
             <div id="fileCount" class="file-count"></div>
         </div>
         <button id="uploadBtn" onclick="uploadFiles()" disabled>Upload</button>
@@ -1317,7 +1317,7 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
         dropArea.addEventListener('drop', (e) => {{
             e.preventDefault();
             dropArea.classList.remove('dragover');
-            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
             uploadBtn.disabled = selectedFiles.length === 0;
             fileCount.textContent = selectedFiles.length > 0 ? selectedFiles.length + ' file(s) selected' : '';
             statusDiv.innerHTML = '';
@@ -1330,7 +1330,7 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
                 const pct = Math.round(((success + failed) / selectedFiles.length) * 100);
                 statusDiv.innerHTML = '<div class="status progress">Uploading... (' + (success + failed + 1) + '/' + selectedFiles.length + ')<div class="progress-bar"><div class="progress-bar-fill" style="width:' + pct + '%"></div></div></div>';
                 try {{
-                    const res = await fetch('{api_base}/photos/share-upload', {{
+                    const res = await fetch('{api_base}/videos/share-upload', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{ token: token, filename: file.name, contentType: file.type }})
@@ -1364,10 +1364,10 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
 
 
 # ============================================================
-# POST /photos/share-download-url
+# POST /videos/share-download-url
 # ============================================================
 
-@app.route(route="photos/share-download-url", methods=["POST"])
+@app.route(route="videos/share-download-url", methods=["POST"])
 def share_download_url(req: func.HttpRequest) -> func.HttpResponse:
     """Generate a download page URL for sharing photos by label."""
     if not ENABLE_SHARE_DOWNLOAD_URL:
@@ -1512,10 +1512,10 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
 </head>
 <body>
     <div class="card">
-        <h1>Download Photos</h1>
+        <h1>Download Videos</h1>
         <p class="subtitle">{label_name} — {len(photo_entries)} photos</p>
         <div class="actions">
-            <p class="footer" style="margin-bottom: 12px;">Click a photo to download individually. This link expires in {expires_hours} hours.</p>
+            <p class="footer" style="margin-bottom: 12px;">Click a video to download individually. This link expires in {expires_hours} hours.</p>
             <button id="downloadAllBtn" onclick="downloadAll()">📥 Download ZIP — for PC</button>
             <div id="status"></div>
         </div>
@@ -1562,7 +1562,7 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
 # ============================================================
 
 @app.event_grid_trigger(arg_name="event")
-def process_photo(event: func.EventGridEvent):
+def process_video(event: func.EventGridEvent):
     """Triggered by Event Grid when a blob is created in the photos container."""
     from storage_trigger import handle_blob_event
     handle_blob_event(event)

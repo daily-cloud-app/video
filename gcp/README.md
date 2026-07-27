@@ -1,4 +1,4 @@
-# Daily Cloud Photo — GCP Backend
+# Daily Cloud Video — GCP Backend
 
 - [English](#english)
 - [日本語](#日本語)
@@ -11,7 +11,7 @@
 
 ### Quick Start
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/photo&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
 
 1. Click the **Cloud Shell** button above
 2. Create a project and link billing:
@@ -39,12 +39,12 @@ You can customize the deployment by setting environment variables before running
 |-----------|---------|-------------|
 | PROJECT_ID | (current project) | GCP project ID |
 | REGION | `asia-northeast1` | Deployment region |
-| BUCKET_NAME | `{project}-photos` | Cloud Storage bucket for photos |
+| BUCKET_NAME | `{project}-videos` | Cloud Storage bucket for photos |
 | REQUIRE_EMAIL | `true` | Require email for signup |
 | REQUIRE_PHONE | `false` | Require phone number for signup |
 | ENABLE_SHARE_URL | `true` | Enable upload URL sharing feature |
 | ENABLE_LABEL_SHARING | `true` | Enable label sharing between users |
-| APP_DISPLAY_NAME | `Daily Cloud Photo Backend` | Display name shown in the app |
+| APP_DISPLAY_NAME | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
 
@@ -56,10 +56,10 @@ You can customize the deployment by setting environment variables before running
 
 ```bash
 gcloud config set project daily-cloud-app
-gcloud functions delete daily-cloud-photo-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-photo-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-app-photos
-gsutil rb gs://daily-cloud-app-photos
+gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
+gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
+gsutil -m rm -r gs://daily-cloud-app-videos
+gsutil rb gs://daily-cloud-app-videos
 gcloud firestore databases delete --database="(default)"
 ```
 
@@ -68,15 +68,15 @@ gcloud firestore databases delete --database="(default)"
 ```
 User → Cloud Functions (HTTP) → Main Handler (Flask routing)
                                     ├── Firebase Auth (auth)
-                                    ├── Cloud Storage (photo storage + thumbnails)
+                                    ├── Cloud Storage (video storage + thumbnails)
                                     ├── Firestore (metadata)
-                                    └── Storage Trigger Function (EXIF + thumbnail generation)
+                                    └── Storage Trigger Function (frame extraction + thumbnail generation)
 ```
 
 - Single Cloud Function handles all API routes (Flask-based routing)
-- User photos isolated under `users/{firebase_uid}/` prefix
+- User videos isolated under `users/{firebase_uid}/` prefix
 - Direct upload to Cloud Storage via signed URLs (no function proxy)
-- Storage trigger automatically extracts EXIF date + generates thumbnails
+- Storage trigger automatically extracts thumbnails from video frames
 
 ### Cost Estimate
 
@@ -112,7 +112,7 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 
 ### クイックスタート
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/photo&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
 
 1. 上記の **Cloud Shell** ボタンをクリック
 2. プロジェクトを作成し、課金を有効化:
@@ -140,12 +140,12 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 |-----------|-----------|------|
 | PROJECT_ID | (現在のプロジェクト) | GCP プロジェクト ID |
 | REGION | `asia-northeast1` | デプロイリージョン |
-| BUCKET_NAME | `{project}-photos` | 写真用 Cloud Storage バケット |
+| BUCKET_NAME | `{project}-videos` | 動画用 Cloud Storage バケット |
 | REQUIRE_EMAIL | `true` | サインアップ時にメール必須 |
 | REQUIRE_PHONE | `false` | サインアップ時に電話番号必須 |
 | ENABLE_SHARE_URL | `true` | アップロード URL 共有機能 |
 | ENABLE_LABEL_SHARING | `true` | ラベル共有機能 |
-| APP_DISPLAY_NAME | `Daily Cloud Photo Backend` | アプリでの表示名 |
+| APP_DISPLAY_NAME | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続
 
@@ -155,14 +155,14 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 
 ### リソースの削除
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/photo&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
 
 ```bash
 gcloud config set project daily-cloud-app
-gcloud functions delete daily-cloud-photo-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-photo-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-app-photos
-gsutil rb gs://daily-cloud-app-photos
+gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
+gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
+gsutil -m rm -r gs://daily-cloud-app-videos
+gsutil rb gs://daily-cloud-app-videos
 gcloud firestore databases delete --database="(default)"
 ```
 
@@ -171,15 +171,15 @@ gcloud firestore databases delete --database="(default)"
 ```
 ユーザー → Cloud Functions (HTTP) → メインハンドラー (Flask ルーティング)
                                         ├── Firebase Auth (認証)
-                                        ├── Cloud Storage (写真保存 + サムネイル)
+                                        ├── Cloud Storage (動画保存 + サムネイル)
                                         ├── Firestore (メタデータ)
-                                        └── Storage Trigger 関数 (EXIF + サムネイル生成)
+                                        └── Storage Trigger 関数 (フレーム抽出 + サムネイル生成)
 ```
 
 - 全 API を1つの Cloud Function で処理（Flask ベースのルーティング）
-- ユーザーの写真は `users/{firebase_uid}/` プレフィックスで分離
+- ユーザーの動画は `users/{firebase_uid}/` プレフィックスで分離
 - 署名付き URL で Cloud Storage に直接アップロード（関数を経由しない）
-- ストレージトリガーで自動的に EXIF 解析 + サムネイル生成
+- ストレージトリガーで自動的に フレーム抽出 + サムネイル生成
 
 ### コスト目安
 

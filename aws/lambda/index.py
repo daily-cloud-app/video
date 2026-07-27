@@ -1,5 +1,5 @@
 """
-Daily Cloud Photo — Unified Lambda Handler
+Daily Cloud Video — Unified Lambda Handler
 Routes requests from API Gateway HTTP API based on path
 """
 import json
@@ -13,14 +13,14 @@ from boto3.dynamodb.conditions import Key
 # ── Environment Variables ──
 USER_POOL_ID = os.environ.get('USER_POOL_ID', '')
 USER_POOL_CLIENT_ID = os.environ.get('USER_POOL_CLIENT_ID', '')
-PHOTOS_BUCKET = os.environ.get('PHOTOS_BUCKET', '')
-PHOTOS_TABLE = os.environ.get('PHOTOS_TABLE', '')
+VIDEOS_BUCKET = os.environ.get('VIDEOS_BUCKET', '')
+VIDEOS_TABLE = os.environ.get('VIDEOS_TABLE', '')
 REQUIRE_EMAIL = os.environ.get('REQUIRE_EMAIL', 'true') == 'true'
 REQUIRE_PHONE = os.environ.get('REQUIRE_PHONE', 'false') == 'true'
 ENABLE_SHARE_URL = os.environ.get('ENABLE_SHARE_URL', 'true') == 'true'
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get('ENABLE_SHARE_DOWNLOAD_URL', 'true') == 'true'
 ENABLE_LABEL_SHARING = os.environ.get('ENABLE_LABEL_SHARING', 'true') == 'true'
-APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Photo Backend')
+APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Video Backend')
 AWS_REGION = os.environ.get('AWS_REGION', 'ap-northeast-1')
 
 # ── AWS Clients ──
@@ -41,7 +41,7 @@ dynamodb = boto3.resource('dynamodb')
 # ============================================================
 
 def _table():
-    return dynamodb.Table(PHOTOS_TABLE)
+    return dynamodb.Table(VIDEOS_TABLE)
 
 
 def _body(event):
@@ -114,25 +114,25 @@ def handler(event, context):
         return _forgot_password(event)
     if method == 'POST' and path == '/auth/reset-password':
         return _reset_password(event)
-    if method == 'GET' and path == '/photos':
-        return _photos_list(event)
-    if method == 'GET' and path.startswith('/photos/') and '/confirm' not in path and '/labels' not in path and '/share' not in path:
-        return _photos_get_one(event, path)
-    if method == 'POST' and path == '/photos/upload-url':
+    if method == 'GET' and path == '/videos':
+        return _videos_list(event)
+    if method == 'GET' and path.startswith('/videos/') and '/confirm' not in path and '/labels' not in path and '/share' not in path:
+        return _videos_get_one(event, path)
+    if method == 'POST' and path == '/videos/upload-url':
         return _upload_url(event)
-    if method == 'POST' and path.startswith('/photos/') and path.endswith('/confirm'):
-        return _photos_confirm(event, path)
-    if method == 'PUT' and path.startswith('/photos/') and path.endswith('/labels'):
-        return _photos_update_labels(event, path)
-    if method == 'DELETE' and path.startswith('/photos/'):
-        return _photos_delete(event, path)
-    if method == 'POST' and path == '/photos/share-upload-url':
+    if method == 'POST' and path.startswith('/videos/') and path.endswith('/confirm'):
+        return _videos_confirm(event, path)
+    if method == 'PUT' and path.startswith('/videos/') and path.endswith('/labels'):
+        return _videos_update_labels(event, path)
+    if method == 'DELETE' and path.startswith('/videos/'):
+        return _videos_delete(event, path)
+    if method == 'POST' and path == '/videos/share-upload-url':
         return _share_upload_url(event)
     if method == 'GET' and path == '/upload-page':
         return _upload_page(event)
-    if method == 'POST' and path == '/photos/share-upload':
+    if method == 'POST' and path == '/videos/share-upload':
         return _share_upload(event)
-    if method == 'POST' and path == '/photos/share-download-url':
+    if method == 'POST' and path == '/videos/share-download-url':
         return _share_download_url(event)
     if method == 'GET' and path == '/download-page':
         return _download_page(event)
@@ -374,10 +374,10 @@ def _reset_password(event):
 
 
 # ============================================================
-# GET /photos
+# GET /videos
 # ============================================================
 
-def _photos_list(event):
+def _videos_list(event):
     uid = _user_id(event)
     if not uid:
         return _err(401, 'Authentication required')
@@ -427,14 +427,14 @@ def _photos_list(event):
             # Full-size URL
             full_url = s3.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key},
+                Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key},
                 ExpiresIn=3600,
             )
             # Thumbnail URL
             if thumbnail_key:
                 thumbnail_url = s3.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': PHOTOS_BUCKET, 'Key': thumbnail_key},
+                    Params={'Bucket': VIDEOS_BUCKET, 'Key': thumbnail_key},
                     ExpiresIn=3600,
                 )
             else:
@@ -445,7 +445,7 @@ def _photos_list(event):
         photos.append({
             'id': item['photoId'],
             'filename': item.get('filename', ''),
-            'contentType': item.get('contentType', 'image/jpeg'),
+            'contentType': item.get('contentType', 'video/mp4'),
             'size': int(item.get('size', 0)),
             'createdAt': item.get('createdAt', ''),
             'thumbnailUrl': thumbnail_url,
@@ -496,12 +496,12 @@ def _photos_list(event):
             try:
                 sp_thumb_url = s3.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': PHOTOS_BUCKET, 'Key': sp_thumb_key or sp_s3_key},
+                    Params={'Bucket': VIDEOS_BUCKET, 'Key': sp_thumb_key or sp_s3_key},
                     ExpiresIn=3600,
                 )
                 sp_full_url = s3.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': PHOTOS_BUCKET, 'Key': sp_s3_key},
+                    Params={'Bucket': VIDEOS_BUCKET, 'Key': sp_s3_key},
                     ExpiresIn=3600,
                 )
             except Exception:
@@ -511,7 +511,7 @@ def _photos_list(event):
             photos.append({
                 'id': sp['photoId'],
                 'filename': sp.get('filename', ''),
-                'contentType': sp.get('contentType', 'image/jpeg'),
+                'contentType': sp.get('contentType', 'video/mp4'),
                 'size': int(sp.get('size', 0)),
                 'createdAt': sp.get('createdAt', ''),
                 'thumbnailUrl': sp_thumb_url,
@@ -521,11 +521,11 @@ def _photos_list(event):
                 'sharedFrom': share_item.get('fromUsername', ''),
             })
 
-    return _ok(200, {'photos': photos, 'nextCursor': nc})
+    return _ok(200, {'videos': photos, 'nextCursor': nc})
 
 
 # ============================================================
-# POST /photos/upload-url
+# POST /videos/upload-url
 # ============================================================
 
 def _upload_url(event):
@@ -535,7 +535,7 @@ def _upload_url(event):
 
     b = _body(event)
     filename = b.get('filename', '')
-    ct = b.get('contentType', 'image/jpeg')
+    ct = b.get('contentType', 'video/mp4')
     created_at = b.get('createdAt', datetime.now(timezone.utc).isoformat())
     # Use photoId from the app if provided (overwrite on re-upload)
     photo_id = b.get('photoId', '') or str(uuid.uuid4())
@@ -553,7 +553,7 @@ def _upload_url(event):
 
     url = s3.generate_presigned_url(
         'put_object',
-        Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key, 'ContentType': ct},
+        Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key, 'ContentType': ct},
         ExpiresIn=3600,
     )
 
@@ -569,17 +569,17 @@ def _upload_url(event):
     })
 
     return _ok(200, {
-        'photoId': photo_id,
+        'videoId': photo_id,
         'uploadUrl': url,
         'expiresIn': 3600,
     })
 
 
 # ============================================================
-# POST /photos/{photoId}/confirm
+# POST /videos/{photoId}/confirm
 # ============================================================
 
-def _photos_confirm(event, path):
+def _videos_confirm(event, path):
     uid = _user_id(event)
     if not uid:
         return _err(401, 'Authentication required')
@@ -594,11 +594,11 @@ def _photos_confirm(event, path):
     result = t.get_item(Key={'userId': uid, 'photoId': photo_id})
     item = result.get('Item')
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     s3_key = item.get('s3Key', '')
     try:
-        obj = s3.head_object(Bucket=PHOTOS_BUCKET, Key=s3_key)
+        obj = s3.head_object(Bucket=VIDEOS_BUCKET, Key=s3_key)
         size = obj.get('ContentLength', 0)
     except Exception:
         return _err(404, 'File not found in storage')
@@ -612,7 +612,7 @@ def _photos_confirm(event, path):
 
     thumb = s3.generate_presigned_url(
         'get_object',
-        Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key},
+        Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key},
         ExpiresIn=3600,
     )
 
@@ -620,15 +620,15 @@ def _photos_confirm(event, path):
 
 
 # ============================================================
-# GET /photos/{photoId}
+# GET /videos/{photoId}
 # ============================================================
 
-def _photos_get_one(event, path):
+def _videos_get_one(event, path):
     uid = _user_id(event)
     if not uid:
         return _err(401, 'Authentication required')
 
-    photo_id = path.split('/photos/')[-1]
+    photo_id = path.split('/videos/')[-1]
     if not photo_id:
         return _err(400, 'photoId is required')
 
@@ -636,7 +636,7 @@ def _photos_get_one(event, path):
     result = t.get_item(Key={'userId': uid, 'photoId': photo_id})
     item = result.get('Item')
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     s3_key = item.get('s3Key', f"{_prefix(uid)}{photo_id}")
     thumbnail_key = item.get('thumbnailKey')
@@ -646,13 +646,13 @@ def _photos_get_one(event, path):
     try:
         full_url = s3.generate_presigned_url(
             'get_object',
-            Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key},
+            Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key},
             ExpiresIn=3600,
         )
         if thumbnail_key:
             thumbnail_url = s3.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': PHOTOS_BUCKET, 'Key': thumbnail_key},
+                Params={'Bucket': VIDEOS_BUCKET, 'Key': thumbnail_key},
                 ExpiresIn=3600,
             )
         else:
@@ -663,7 +663,7 @@ def _photos_get_one(event, path):
     return _ok(200, {
         'id': photo_id,
         'filename': item.get('filename', ''),
-        'contentType': item.get('contentType', 'image/jpeg'),
+        'contentType': item.get('contentType', 'video/mp4'),
         'size': int(item.get('size', 0)),
         'createdAt': item.get('createdAt', ''),
         'fullUrl': full_url,
@@ -672,10 +672,10 @@ def _photos_get_one(event, path):
 
 
 # ============================================================
-# DELETE /photos/{photoId}
+# DELETE /videos/{photoId}
 # ============================================================
 
-def _photos_delete(event, path):
+def _videos_delete(event, path):
     uid = _user_id(event)
     if not uid:
         return _err(401, 'Authentication required')
@@ -689,7 +689,7 @@ def _photos_delete(event, path):
     result = t.get_item(Key={'userId': uid, 'photoId': photo_id})
     item = result.get('Item')
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     # Soft delete: change status to deleted (S3 data retained via versioning)
     t.update_item(
@@ -702,14 +702,14 @@ def _photos_delete(event, path):
         },
     )
 
-    return _ok(200, {'message': 'Photo deleted.'})
+    return _ok(200, {'message': 'Video deleted.'})
 
 
 # ============================================================
-# PUT /photos/{photoId}/labels
+# PUT /videos/{photoId}/labels
 # ============================================================
 
-def _photos_update_labels(event, path):
+def _videos_update_labels(event, path):
     uid = _user_id(event)
     if not uid:
         return _err(401, 'Authentication required')
@@ -731,7 +731,7 @@ def _photos_update_labels(event, path):
     result = t.get_item(Key={'userId': uid, 'photoId': photo_id})
     item = result.get('Item')
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     update_expr = 'SET labels = :labels'
     expr_values = {':labels': labels}
@@ -751,7 +751,7 @@ def _photos_update_labels(event, path):
 
 
 # ============================================================
-# POST /photos/share-upload-url
+# POST /videos/share-upload-url
 # ============================================================
 
 def _share_upload_url(event):
@@ -847,7 +847,7 @@ def _upload_page(event):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Upload</title>
+    <title>Video Upload</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
@@ -875,14 +875,14 @@ def _upload_page(event):
 </head>
 <body>
     <div class="card">
-        <h1>Upload Photos</h1>
-        <p class="subtitle">Select or drop images to upload. This link expires in {expires_hours} hours.</p>
+        <h1>Upload Videos</h1>
+        <p class="subtitle">Select or drop videos to upload. This link expires in {expires_hours} hours.</p>
 
         <div class="upload-area" id="dropArea" onclick="document.getElementById('fileInput').click()">
             <div class="icon">☁️</div>
             <p>Drag & Drop</p>
             <p>or <span class="browse">Browse files</span></p>
-            <input type="file" id="fileInput" accept="image/*" multiple>
+            <input type="file" id="fileInput" accept="video/*" multiple>
             <div id="fileCount" class="file-count"></div>
         </div>
 
@@ -893,7 +893,7 @@ def _upload_page(event):
     <script>
         const token = '{token}';
         const userId = '{uid}';
-        const bucket = '{PHOTOS_BUCKET}';
+        const bucket = '{VIDEOS_BUCKET}';
         let selectedFiles = [];
 
         const fileInput = document.getElementById('fileInput');
@@ -914,7 +914,7 @@ def _upload_page(event):
         dropArea.addEventListener('drop', (e) => {{
             e.preventDefault();
             dropArea.classList.remove('dragover');
-            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
             uploadBtn.disabled = selectedFiles.length === 0;
             fileCount.textContent = selectedFiles.length > 0 ? `${{selectedFiles.length}} file(s) selected` : '';
             statusDiv.innerHTML = '';
@@ -930,7 +930,7 @@ def _upload_page(event):
                 statusDiv.innerHTML = `<div class="status progress">Uploading... (${{success + failed + 1}}/${{selectedFiles.length}})<div class="progress-bar"><div class="progress-bar-fill" style="width:${{pct}}%"></div></div></div>`;
                 try {{
                     // Get presigned URL
-                    const res = await fetch('{api_base}/photos/share-upload', {{
+                    const res = await fetch('{api_base}/videos/share-upload', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{ token: token, filename: file.name, contentType: file.type }})
@@ -980,7 +980,7 @@ def _html_response(status_code, html):
 
 
 # ============================================================
-# POST /photos/share-upload (token-based, no auth required)
+# POST /videos/share-upload (token-based, no auth required)
 # ============================================================
 
 def _share_upload(event):
@@ -990,7 +990,7 @@ def _share_upload(event):
     b = _body(event)
     token = b.get('token', '')
     filename = b.get('filename', '')
-    ct = b.get('contentType', 'image/jpeg')
+    ct = b.get('contentType', 'video/mp4')
 
     if not token or not filename:
         return _err(400, 'token and filename are required')
@@ -1030,7 +1030,7 @@ def _share_upload(event):
 
     url = s3.generate_presigned_url(
         'put_object',
-        Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key, 'ContentType': ct},
+        Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key, 'ContentType': ct},
         ExpiresIn=3600,
     )
 
@@ -1051,7 +1051,7 @@ def _share_upload(event):
 
     return _ok(200, {
         'uploadUrl': url,
-        'photoId': photo_id,
+        'videoId': photo_id,
     })
 
 
@@ -1310,7 +1310,7 @@ def _get_username(uid):
 
 
 # ============================================================
-# POST /photos/share-download-url
+# POST /videos/share-download-url
 # ============================================================
 
 def _share_download_url(event):
@@ -1468,14 +1468,14 @@ def _download_page(event):
     # Sort by date descending
     photos.sort(key=lambda p: p.get('createdAt', ''), reverse=True)
 
-    # Generate signed URLs for each photo
+    # Generate signed URLs for each video
     photo_entries = []
     for photo in photos:
         s3_key = photo.get('s3Key', f"users/{uid}/{photo['photoId']}")
         thumb_key = photo.get('thumbnailKey', s3_key)
         try:
-            thumb_url = s3.generate_presigned_url('get_object', Params={'Bucket': PHOTOS_BUCKET, 'Key': thumb_key}, ExpiresIn=3600)
-            full_url = s3.generate_presigned_url('get_object', Params={'Bucket': PHOTOS_BUCKET, 'Key': s3_key}, ExpiresIn=3600)
+            thumb_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': thumb_key}, ExpiresIn=3600)
+            full_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key}, ExpiresIn=3600)
         except Exception:
             continue
         photo_entries.append({
@@ -1504,7 +1504,7 @@ def _download_page(event):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Download Photos</title>
+    <title>Download Videos</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
@@ -1529,11 +1529,11 @@ def _download_page(event):
 </head>
 <body>
     <div class="card">
-        <h1>Download Photos</h1>
-        <p class="subtitle">{label_name} — {len(photo_entries)} photos</p>
+        <h1>Download Videos</h1>
+        <p class="subtitle">{label_name} — {len(photo_entries)} videos</p>
 
         <div class="actions">
-            <p class="footer" style="margin-bottom: 12px;">Click a photo to download individually. This link expires in {expires_hours} hours.</p>
+            <p class="footer" style="margin-bottom: 12px;">Click a video to download individually. This link expires in {expires_hours} hours.</p>
             <button id="downloadAllBtn" onclick="downloadAll()">📥 Download ZIP — for PC</button>
             <div id="status"></div>
         </div>

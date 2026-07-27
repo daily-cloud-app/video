@@ -1,5 +1,5 @@
 """
-Daily Cloud Photo — GCP Cloud Function (Unified HTTP Handler)
+Daily Cloud Video — GCP Cloud Function (Unified HTTP Handler)
 Equivalent to the AWS Lambda implementation using:
   - Firebase Auth (instead of Cognito)
   - Firestore Native mode (instead of DynamoDB)
@@ -18,14 +18,14 @@ import flask
 import functions_framework
 
 # ── Environment Variables ──
-PHOTOS_BUCKET = os.environ.get('PHOTOS_BUCKET', '')
+VIDEOS_BUCKET = os.environ.get('VIDEOS_BUCKET', '')
 GCP_PROJECT = os.environ.get('GCP_PROJECT', '')
 REQUIRE_EMAIL = os.environ.get('REQUIRE_EMAIL', 'true') == 'true'
 REQUIRE_PHONE = os.environ.get('REQUIRE_PHONE', 'false') == 'true'
 ENABLE_SHARE_URL = os.environ.get('ENABLE_SHARE_URL', 'true') == 'true'
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get('ENABLE_SHARE_DOWNLOAD_URL', 'true') == 'true'
 ENABLE_LABEL_SHARING = os.environ.get('ENABLE_LABEL_SHARING', 'true') == 'true'
-APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Photo Backend')
+APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Video Backend')
 SIGNED_URL_EXPIRY = 3600  # 1 hour
 
 # ── Initialize Firebase & GCP Clients ──
@@ -36,7 +36,7 @@ db = firestore.Client()
 storage_client = gcs.Client()
 
 # Firestore collection name
-PHOTOS_COLLECTION = 'photos'
+VIDEOS_COLLECTION = 'videos'
 
 
 # ============================================================
@@ -98,8 +98,8 @@ def _doc_id(user_id, photo_id):
 
 
 def _get_photo_doc(user_id, photo_id):
-    """Get a photo document from Firestore."""
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(user_id, photo_id))
+    """Get a video document from Firestore."""
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(user_id, photo_id))
     doc = doc_ref.get()
     if doc.exists:
         return doc.to_dict()
@@ -107,8 +107,8 @@ def _get_photo_doc(user_id, photo_id):
 
 
 def _query_user_photos(user_id, prefix=None, limit=None):
-    """Query photos for a user, optionally filtering by photoId prefix."""
-    query = db.collection(PHOTOS_COLLECTION).where('userId', '==', user_id)
+    """Query videos for a user, optionally filtering by photoId prefix."""
+    query = db.collection(VIDEOS_COLLECTION).where('userId', '==', user_id)
     if prefix:
         # Filter documents where photoId starts with prefix
         query = query.where('photoId', '>=', prefix).where('photoId', '<', prefix + '\uffff')
@@ -127,7 +127,7 @@ def _generate_signed_url(blob_name, method='GET', content_type=None, expiry=SIGN
     auth_req = auth_requests.Request()
     credentials.refresh(auth_req)
 
-    bucket = storage_client.bucket(PHOTOS_BUCKET)
+    bucket = storage_client.bucket(VIDEOS_BUCKET)
     blob = bucket.blob(blob_name)
 
     # Use service_account_email for signing via IAM API
@@ -218,31 +218,31 @@ def main_handler(request):
     if method == 'POST' and path == '/auth/reset-password':
         return _reset_password(request)
 
-    # Photo routes
-    if method == 'GET' and path == '/photos':
-        return _photos_list(request)
-    if method == 'POST' and path == '/photos/upload-url':
+    # Video routes
+    if method == 'GET' and path == '/videos':
+        return _videos_list(request)
+    if method == 'POST' and path == '/videos/upload-url':
         return _upload_url(request)
-    if method == 'POST' and path == '/photos/share-upload-url':
+    if method == 'POST' and path == '/videos/share-upload-url':
         return _share_upload_url(request)
     if method == 'GET' and path == '/upload-page':
         return _upload_page(request)
-    if method == 'POST' and path == '/photos/share-upload':
+    if method == 'POST' and path == '/videos/share-upload':
         return _share_upload(request)
-    if method == 'POST' and path == '/photos/share-download-url':
+    if method == 'POST' and path == '/videos/share-download-url':
         return _share_download_url(request)
     if method == 'GET' and path == '/download-page':
         return _download_page(request)
 
-    # Photo routes with ID parameter
-    if method == 'POST' and path.startswith('/photos/') and path.endswith('/confirm'):
-        return _photos_confirm(request, path)
-    if method == 'PUT' and path.startswith('/photos/') and path.endswith('/labels'):
-        return _photos_update_labels(request, path)
-    if method == 'DELETE' and path.startswith('/photos/'):
-        return _photos_delete(request, path)
-    if method == 'GET' and path.startswith('/photos/'):
-        return _photos_get_one(request, path)
+    # Video routes with ID parameter
+    if method == 'POST' and path.startswith('/videos/') and path.endswith('/confirm'):
+        return _videos_confirm(request, path)
+    if method == 'PUT' and path.startswith('/videos/') and path.endswith('/labels'):
+        return _videos_update_labels(request, path)
+    if method == 'DELETE' and path.startswith('/videos/'):
+        return _videos_delete(request, path)
+    if method == 'GET' and path.startswith('/videos/'):
+        return _videos_get_one(request, path)
 
     # Share routes
     if method == 'POST' and path == '/shares':
@@ -596,10 +596,10 @@ def _reset_password(request):
 
 
 # ============================================================
-# GET /photos
+# GET /videos
 # ============================================================
 
-def _photos_list(request):
+def _videos_list(request):
     uid = _get_user_id(request)
     if not uid:
         return _err(401, 'Authentication required')
@@ -607,8 +607,8 @@ def _photos_list(request):
     limit = int(request.args.get('limit', '100'))
     cursor = request.args.get('cursor')
 
-    # Query user's own photos
-    query = db.collection(PHOTOS_COLLECTION).where('userId', '==', uid)
+    # Query user's own videos
+    query = db.collection(VIDEOS_COLLECTION).where('userId', '==', uid)
 
     docs = list(query.stream())
 
@@ -617,7 +617,7 @@ def _photos_list(request):
         item = doc.to_dict()
         photo_id = item.get('photoId', '')
 
-        # Skip non-photo records
+        # Skip non-video records
         if photo_id.startswith('share_token:'):
             continue
         if photo_id.startswith('share:'):
@@ -645,7 +645,7 @@ def _photos_list(request):
         photos.append({
             'id': photo_id,
             'filename': item.get('filename', ''),
-            'contentType': item.get('contentType', 'image/jpeg'),
+            'contentType': item.get('contentType', 'video/mp4'),
             'size': int(item.get('size', 0)),
             'createdAt': item.get('createdAt', ''),
             'thumbnailUrl': thumbnail_url,
@@ -656,8 +656,8 @@ def _photos_list(request):
             'sharedFrom': '',
         })
 
-    # Include shared photos (from accepted shares)
-    share_query = db.collection(PHOTOS_COLLECTION).where('userId', '==', uid).where(
+    # Include shared videos (from accepted shares)
+    share_query = db.collection(VIDEOS_COLLECTION).where('userId', '==', uid).where(
         'photoId', '>=', 'share:').where('photoId', '<', 'share:\uffff')
     share_docs = list(share_query.stream())
 
@@ -671,13 +671,13 @@ def _photos_list(request):
         if not from_uid or not label_id:
             continue
 
-        # Get photos from the sharing user with the specified label
-        shared_photos_query = db.collection(PHOTOS_COLLECTION).where('userId', '==', from_uid)
+        # Get videos from the sharing user with the specified label
+        shared_photos_query = db.collection(VIDEOS_COLLECTION).where('userId', '==', from_uid)
         for sp_doc in shared_photos_query.stream():
             sp = sp_doc.to_dict()
             sp_photo_id = sp.get('photoId', '')
 
-            # Skip non-photo records
+            # Skip non-video records
             if sp_photo_id.startswith('share_token:') or sp_photo_id.startswith('share:') or sp_photo_id.startswith('sent_share:'):
                 continue
             if sp.get('status') == 'deleted':
@@ -700,7 +700,7 @@ def _photos_list(request):
             photos.append({
                 'id': sp_photo_id,
                 'filename': sp.get('filename', ''),
-                'contentType': sp.get('contentType', 'image/jpeg'),
+                'contentType': sp.get('contentType', 'video/mp4'),
                 'size': int(sp.get('size', 0)),
                 'createdAt': sp.get('createdAt', ''),
                 'thumbnailUrl': sp_thumb_url,
@@ -723,25 +723,25 @@ def _photos_list(request):
     page = photos[start_idx:start_idx + limit]
     next_cursor = page[-1]['id'] if len(photos) > start_idx + limit and page else None
 
-    return _ok(200, {'photos': page, 'nextCursor': next_cursor})
+    return _ok(200, {'videos': page, 'nextCursor': next_cursor})
 
 
 # ============================================================
-# GET /photos/{id}
+# GET /videos/{id}
 # ============================================================
 
-def _photos_get_one(request, path):
+def _videos_get_one(request, path):
     uid = _get_user_id(request)
     if not uid:
         return _err(401, 'Authentication required')
 
-    photo_id = path.split('/photos/')[-1]
+    photo_id = path.split('/videos/')[-1]
     if not photo_id:
         return _err(400, 'photoId is required')
 
     item = _get_photo_doc(uid, photo_id)
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     gcs_key = item.get('gcsKey', f"{_prefix(uid)}{photo_id}")
     thumbnail_key = item.get('thumbnailKey')
@@ -760,7 +760,7 @@ def _photos_get_one(request, path):
     return _ok(200, {
         'id': photo_id,
         'filename': item.get('filename', ''),
-        'contentType': item.get('contentType', 'image/jpeg'),
+        'contentType': item.get('contentType', 'video/mp4'),
         'size': int(item.get('size', 0)),
         'createdAt': item.get('createdAt', ''),
         'fullUrl': full_url,
@@ -769,7 +769,7 @@ def _photos_get_one(request, path):
 
 
 # ============================================================
-# POST /photos/upload-url
+# POST /videos/upload-url
 # ============================================================
 
 def _upload_url(request):
@@ -779,7 +779,7 @@ def _upload_url(request):
 
     body = request.get_json(silent=True) or {}
     filename = body.get('filename', '')
-    content_type = body.get('contentType', 'image/jpeg')
+    content_type = body.get('contentType', 'video/mp4')
     created_at = body.get('createdAt', datetime.now(timezone.utc).isoformat())
     photo_id = body.get('photoId', '') or str(uuid.uuid4())
 
@@ -798,7 +798,7 @@ def _upload_url(request):
     url = _generate_signed_url(gcs_key, method='PUT', content_type=content_type)
 
     # Save metadata to Firestore
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, photo_id))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, photo_id))
     doc_ref.set({
         'userId': uid,
         'photoId': photo_id,
@@ -811,17 +811,17 @@ def _upload_url(request):
     })
 
     return _ok(200, {
-        'photoId': photo_id,
+        'videoId': photo_id,
         'uploadUrl': url,
         'expiresIn': SIGNED_URL_EXPIRY,
     })
 
 
 # ============================================================
-# POST /photos/{id}/confirm
+# POST /videos/{id}/confirm
 # ============================================================
 
-def _photos_confirm(request, path):
+def _videos_confirm(request, path):
     uid = _get_user_id(request)
     if not uid:
         return _err(401, 'Authentication required')
@@ -833,13 +833,13 @@ def _photos_confirm(request, path):
 
     item = _get_photo_doc(uid, photo_id)
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     gcs_key = item.get('gcsKey', '')
 
     # Check file exists in Cloud Storage
     try:
-        bucket = storage_client.bucket(PHOTOS_BUCKET)
+        bucket = storage_client.bucket(VIDEOS_BUCKET)
         blob = bucket.blob(gcs_key)
         blob.reload()
         size = blob.size or 0
@@ -847,7 +847,7 @@ def _photos_confirm(request, path):
         return _err(404, 'File not found in storage')
 
     # Update status in Firestore
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, photo_id))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, photo_id))
     doc_ref.update({
         'status': 'uploaded',
         'size': size,
@@ -860,10 +860,10 @@ def _photos_confirm(request, path):
 
 
 # ============================================================
-# PUT /photos/{id}/labels
+# PUT /videos/{id}/labels
 # ============================================================
 
-def _photos_update_labels(request, path):
+def _videos_update_labels(request, path):
     uid = _get_user_id(request)
     if not uid:
         return _err(401, 'Authentication required')
@@ -882,23 +882,23 @@ def _photos_update_labels(request, path):
 
     item = _get_photo_doc(uid, photo_id)
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     update_data = {'labels': labels}
     if label_names and isinstance(label_names, dict):
         update_data['labelNames'] = label_names
 
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, photo_id))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, photo_id))
     doc_ref.update(update_data)
 
     return _ok(200, {'message': 'Labels updated.', 'labels': labels})
 
 
 # ============================================================
-# DELETE /photos/{id}
+# DELETE /videos/{id}
 # ============================================================
 
-def _photos_delete(request, path):
+def _videos_delete(request, path):
     uid = _get_user_id(request)
     if not uid:
         return _err(401, 'Authentication required')
@@ -910,20 +910,20 @@ def _photos_delete(request, path):
 
     item = _get_photo_doc(uid, photo_id)
     if not item:
-        return _err(404, 'Photo not found')
+        return _err(404, 'Video not found')
 
     # Soft delete: change status (GCS data preserved via versioning)
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, photo_id))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, photo_id))
     doc_ref.update({
         'status': 'deleted',
         'deletedAt': datetime.now(timezone.utc).isoformat(),
     })
 
-    return _ok(200, {'message': 'Photo deleted.'})
+    return _ok(200, {'message': 'Video deleted.'})
 
 
 # ============================================================
-# POST /photos/share-upload-url
+# POST /videos/share-upload-url
 # ============================================================
 
 def _share_upload_url(request):
@@ -943,7 +943,7 @@ def _share_upload_url(request):
     token = str(uuid.uuid4())
 
     # Save token to Firestore
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'share_token:{token}'))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'share_token:{token}'))
     token_data = {
         'userId': uid,
         'photoId': f'share_token:{token}',
@@ -984,7 +984,7 @@ def _upload_page(request):
         return _html_response(400, '<h1>Invalid link</h1>')
 
     # Validate token by scanning Firestore
-    query = db.collection(PHOTOS_COLLECTION).where(
+    query = db.collection(VIDEOS_COLLECTION).where(
         'photoId', '==', f'share_token:{token}'
     ).where('status', '==', 'active').limit(1)
     docs = list(query.stream())
@@ -1014,7 +1014,7 @@ def _upload_page(request):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Upload</title>
+    <title>Video Upload</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }}
@@ -1042,14 +1042,14 @@ def _upload_page(request):
 </head>
 <body>
     <div class="card">
-        <h1>Upload Photos</h1>
-        <p class="subtitle">Select or drop images to upload. This link expires in {expires_hours} hours.</p>
+        <h1>Upload Videos</h1>
+        <p class="subtitle">Select or drop videos to upload. This link expires in {expires_hours} hours.</p>
 
         <div class="upload-area" id="dropArea" onclick="document.getElementById('fileInput').click()">
             <div class="icon">☁️</div>
             <p>Drag & Drop</p>
             <p>or <span class="browse">Browse Files</span></p>
-            <input type="file" id="fileInput" accept="image/*" multiple>
+            <input type="file" id="fileInput" accept="video/*" multiple>
             <div id="fileCount" class="file-count"></div>
         </div>
 
@@ -1079,7 +1079,7 @@ def _upload_page(request):
         dropArea.addEventListener('drop', (e) => {{
             e.preventDefault();
             dropArea.classList.remove('dragover');
-            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
             uploadBtn.disabled = selectedFiles.length === 0;
             fileCount.textContent = selectedFiles.length > 0 ? `${{selectedFiles.length}} file(s) selected` : '';
             statusDiv.innerHTML = '';
@@ -1094,7 +1094,7 @@ def _upload_page(request):
                 const pct = Math.round(((success + failed) / selectedFiles.length) * 100);
                 statusDiv.innerHTML = `<div class="status progress">Uploading... (${{success + failed + 1}}/${{selectedFiles.length}})<div class="progress-bar"><div class="progress-bar-fill" style="width:${{pct}}%"></div></div></div>`;
                 try {{
-                    const res = await fetch('{api_base}/photos/share-upload', {{
+                    const res = await fetch('{api_base}/videos/share-upload', {{
                         method: 'POST',
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{ token: token, filename: file.name, contentType: file.type }})
@@ -1141,7 +1141,7 @@ def _html_response(status_code, html):
 
 
 # ============================================================
-# POST /photos/share-upload (token-based, no auth required)
+# POST /videos/share-upload (token-based, no auth required)
 # ============================================================
 
 def _share_upload(request):
@@ -1152,13 +1152,13 @@ def _share_upload(request):
     body = request.get_json(silent=True) or {}
     token = body.get('token', '')
     filename = body.get('filename', '')
-    content_type = body.get('contentType', 'image/jpeg')
+    content_type = body.get('contentType', 'video/mp4')
 
     if not token or not filename:
         return _err(400, 'token and filename are required')
 
     # Validate token
-    query = db.collection(PHOTOS_COLLECTION).where(
+    query = db.collection(VIDEOS_COLLECTION).where(
         'photoId', '==', f'share_token:{token}'
     ).where('status', '==', 'active').limit(1)
     docs = list(query.stream())
@@ -1191,7 +1191,7 @@ def _share_upload(request):
     url = _generate_signed_url(gcs_key, method='PUT', content_type=content_type)
 
     # Pre-create Firestore record with label
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, photo_id))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, photo_id))
     photo_data = {
         'userId': uid,
         'photoId': photo_id,
@@ -1251,7 +1251,7 @@ def _create_share(request):
     from_username = _get_user_email(uid)
 
     # Save as a record for the recipient user
-    recipient_doc = db.collection(PHOTOS_COLLECTION).document(_doc_id(to_uid, f'share:{share_id}'))
+    recipient_doc = db.collection(VIDEOS_COLLECTION).document(_doc_id(to_uid, f'share:{share_id}'))
     recipient_doc.set({
         'userId': to_uid,
         'photoId': f'share:{share_id}',
@@ -1266,7 +1266,7 @@ def _create_share(request):
     })
 
     # Save a record for the sender (for managing sent shares)
-    sender_doc = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'sent_share:{share_id}'))
+    sender_doc = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'sent_share:{share_id}'))
     sender_doc.set({
         'userId': uid,
         'photoId': f'sent_share:{share_id}',
@@ -1292,7 +1292,7 @@ def _pending_shares(request):
     if not uid:
         return _err(401, 'Authentication required')
 
-    query = db.collection(PHOTOS_COLLECTION).where('userId', '==', uid).where(
+    query = db.collection(VIDEOS_COLLECTION).where('userId', '==', uid).where(
         'photoId', '>=', 'share:').where('photoId', '<', 'share:\uffff')
     docs = list(query.stream())
 
@@ -1318,7 +1318,7 @@ def _sent_shares(request):
     if not uid:
         return _err(401, 'Authentication required')
 
-    query = db.collection(PHOTOS_COLLECTION).where('userId', '==', uid).where(
+    query = db.collection(VIDEOS_COLLECTION).where('userId', '==', uid).where(
         'photoId', '>=', 'sent_share:').where('photoId', '<', 'sent_share:\uffff')
     docs = list(query.stream())
 
@@ -1343,7 +1343,7 @@ def _list_shares(request):
     if not uid:
         return _err(401, 'Authentication required')
 
-    query = db.collection(PHOTOS_COLLECTION).where('userId', '==', uid).where(
+    query = db.collection(VIDEOS_COLLECTION).where('userId', '==', uid).where(
         'photoId', '>=', 'share:').where('photoId', '<', 'share:\uffff')
     docs = list(query.stream())
 
@@ -1373,7 +1373,7 @@ def _accept_share(request, path):
     parts = path.strip('/').split('/')
     share_id = parts[1] if len(parts) >= 3 else ''
 
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
     doc = doc_ref.get()
     if not doc.exists:
         return _err(404, 'Share not found')
@@ -1392,7 +1392,7 @@ def _reject_share(request, path):
     parts = path.strip('/').split('/')
     share_id = parts[1] if len(parts) >= 3 else ''
 
-    doc_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
     doc_ref.delete()
 
     return _ok(200, {'message': 'Share rejected.'})
@@ -1408,26 +1408,26 @@ def _delete_share(request, path):
     share_id = parts[1] if len(parts) >= 2 else ''
 
     # Try deleting as receiver (share:xxx)
-    receiver_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
+    receiver_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'share:{share_id}'))
     receiver_doc = receiver_ref.get()
     if receiver_doc.exists:
         from_uid = receiver_doc.to_dict().get('fromUser', '')
         receiver_ref.delete()
         # Also delete the sender's record
         if from_uid:
-            sender_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(from_uid, f'sent_share:{share_id}'))
+            sender_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(from_uid, f'sent_share:{share_id}'))
             sender_ref.delete()
         return _ok(200, {'message': 'Share removed.'})
 
     # Try deleting as sender (sent_share:xxx)
-    sender_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(uid, f'sent_share:{share_id}'))
+    sender_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'sent_share:{share_id}'))
     sender_doc = sender_ref.get()
     if sender_doc.exists:
         to_uid = sender_doc.to_dict().get('toUser', '')
         sender_ref.delete()
         # Also delete the receiver's record
         if to_uid:
-            receiver_ref = db.collection(PHOTOS_COLLECTION).document(_doc_id(to_uid, f'share:{share_id}'))
+            receiver_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(to_uid, f'share:{share_id}'))
             receiver_ref.delete()
         return _ok(200, {'message': 'Share removed.'})
 
@@ -1435,7 +1435,7 @@ def _delete_share(request, path):
 
 
 # ============================================================
-# POST /photos/share-download-url
+# POST /videos/share-download-url
 # ============================================================
 
 def _share_download_url(request):
@@ -1607,7 +1607,7 @@ def _download_page(request):
         <h1>Download Photos</h1>
         <p class="subtitle">{label_name} — {len(photo_entries)} photos</p>
         <div class="actions">
-            <p class="footer" style="margin-bottom: 12px;">Click a photo to download individually. This link expires in {expires_hours} hours.</p>
+            <p class="footer" style="margin-bottom: 12px;">Click a video to download individually. This link expires in {expires_hours} hours.</p>
             <button id="downloadAllBtn" onclick="downloadAll()">📥 Download ZIP — for PC</button>
             <div id="status"></div>
         </div>

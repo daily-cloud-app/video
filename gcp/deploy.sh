@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Daily Cloud Photo — GCP One-Command Deployment Script
+# Daily Cloud Video — GCP One-Command Deployment Script
 # Deploys Cloud Functions, Cloud Storage, and Firestore
 # ============================================================
 set -e
@@ -8,9 +8,9 @@ set -e
 # ── Configuration ──
 PROJECT_ID="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${GCP_REGION:-asia-northeast1}"
-BUCKET_NAME="${PHOTOS_BUCKET:-${PROJECT_ID}-photos}"
-FUNCTION_NAME="daily-cloud-photo-api"
-TRIGGER_FUNCTION_NAME="daily-cloud-photo-storage-trigger"
+BUCKET_NAME="${VIDEOS_BUCKET:-${PROJECT_ID}-videos}"
+FUNCTION_NAME="daily-cloud-video-api"
+TRIGGER_FUNCTION_NAME="daily-cloud-video-storage-trigger"
 FIREBASE_API_KEY="${FIREBASE_API_KEY:-}"
 
 # Feature toggles
@@ -18,7 +18,7 @@ REQUIRE_EMAIL="${REQUIRE_EMAIL:-true}"
 REQUIRE_PHONE="${REQUIRE_PHONE:-false}"
 ENABLE_SHARE_URL="${ENABLE_SHARE_URL:-true}"
 ENABLE_LABEL_SHARING="${ENABLE_LABEL_SHARING:-true}"
-APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Daily Cloud Photo Backend}"
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-Daily Cloud Video Backend}"
 
 # ── Colors ──
 RED='\033[0;31m'
@@ -28,7 +28,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}============================================================${NC}"
-echo -e "${BLUE}  Daily Cloud Photo — GCP Deployment${NC}"
+echo -e "${BLUE}  Daily Cloud Video — GCP Deployment${NC}"
 echo -e "${BLUE}============================================================${NC}"
 echo ""
 
@@ -106,7 +106,7 @@ fi
 
 # Create composite index for userId + photoId queries
 gcloud firestore indexes composite create \
-    --collection-group=photos \
+    --collection-group=videos \
     --field-config field-path=userId,order=ascending \
     --field-config field-path=photoId,order=ascending \
     --project="${PROJECT_ID}" \
@@ -199,7 +199,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
     --allow-unauthenticated \
     --memory=256MB \
     --timeout=60s \
-    --set-env-vars="PHOTOS_BUCKET=${BUCKET_NAME},GCP_PROJECT=${PROJECT_ID},FIREBASE_API_KEY=${FIREBASE_API_KEY},REQUIRE_EMAIL=${REQUIRE_EMAIL},REQUIRE_PHONE=${REQUIRE_PHONE},ENABLE_SHARE_URL=${ENABLE_SHARE_URL},ENABLE_LABEL_SHARING=${ENABLE_LABEL_SHARING},APP_DISPLAY_NAME=${APP_DISPLAY_NAME}" \
+    --set-env-vars="VIDEOS_BUCKET=${BUCKET_NAME},GCP_PROJECT=${PROJECT_ID},FIREBASE_API_KEY=${FIREBASE_API_KEY},REQUIRE_EMAIL=${REQUIRE_EMAIL},REQUIRE_PHONE=${REQUIRE_PHONE},ENABLE_SHARE_URL=${ENABLE_SHARE_URL},ENABLE_LABEL_SHARING=${ENABLE_LABEL_SHARING},APP_DISPLAY_NAME=${APP_DISPLAY_NAME}" \
     --project="${PROJECT_ID}" \
     --quiet
 
@@ -243,7 +243,7 @@ gcloud functions deploy "${TRIGGER_FUNCTION_NAME}" \
     --trigger-event-filters="bucket=${BUCKET_NAME}" \
     --memory=512MB \
     --timeout=120s \
-    --set-env-vars="PHOTOS_BUCKET=${BUCKET_NAME},GCP_PROJECT=${PROJECT_ID}" \
+    --set-env-vars="VIDEOS_BUCKET=${BUCKET_NAME},GCP_PROJECT=${PROJECT_ID}" \
     --project="${PROJECT_ID}" \
     --quiet
 

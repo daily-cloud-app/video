@@ -4,7 +4,7 @@
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "python",
     "COSMOS_CONNECTION": "",
-    "COSMOS_DATABASE": "dailycloudphoto",
+    "COSMOS_DATABASE": "dailycloudvideo",
     "STORAGE_CONNECTION": "",
     "STORAGE_CONTAINER": "photos",
     "JWT_SECRET": "dev-secret-change-me-in-production",

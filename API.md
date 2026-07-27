@@ -1,4 +1,4 @@
-# Daily Cloud Photo — API & Data Reference
+# Daily Cloud Video — API & Data Reference
 
 REST API specification and data schema that all cloud provider backends must implement.
 
@@ -25,7 +25,7 @@ Returns server configuration. No authentication required.
 **Response 200:**
 ```json
 {
-  "name": "Daily Cloud Photo Backend",
+  "name": "Daily Cloud Video Backend",
   "version": "1.0.0",
   "signupFields": ["username", "password", "email"],
   "features": ["share-upload-url", "share-download-url", "label-sharing"]
@@ -161,11 +161,11 @@ Reset password with confirmation code.
 
 ---
 
-## Photos
+## Videos
 
-### GET /photos
+### GET /videos
 
-List photos for the authenticated user. Includes shared photos from accepted label shares.
+List Videos for the authenticated user. Includes shared Videos from accepted label shares.
 
 **Query Parameters:**
 - `limit` (int, optional, default: 100)
@@ -174,11 +174,11 @@ List photos for the authenticated user. Includes shared photos from accepted lab
 **Response 200:**
 ```json
 {
-  "photos": [
+  "videos": [
     {
       "id": "string (photoId / cloudId)",
       "filename": "string",
-      "contentType": "image/jpeg",
+      "contentType": "video/mp4",
       "size": 1234567,
       "createdAt": "2025-01-01T00:00:00Z",
       "thumbnailUrl": "string (presigned URL, 1hr expiry)",
@@ -193,20 +193,20 @@ List photos for the authenticated user. Includes shared photos from accepted lab
 }
 ```
 
-- Photos with `status: deleted` are excluded from this response
-- Shared photos have `"shared": true` and `"sharedFrom": "username"`
+- Videos with `status: deleted` are excluded from this response
+- Shared Videos have `"shared": true` and `"sharedFrom": "username"`
 - `labelNames` maps label IDs to their display names (for restoring names on other devices)
 
-### GET /photos/{id}
+### GET /videos/{id}
 
-Get a single photo's metadata and fresh presigned URLs.
+Get a single Video's metadata and fresh presigned URLs.
 
 **Response 200:**
 ```json
 {
   "id": "string",
   "filename": "string",
-  "contentType": "image/jpeg",
+  "contentType": "video/mp4",
   "size": 1234567,
   "createdAt": "2025-01-01T00:00:00Z",
   "fullUrl": "string (presigned URL)",
@@ -214,26 +214,26 @@ Get a single photo's metadata and fresh presigned URLs.
 }
 ```
 
-### POST /photos/upload-url
+### POST /videos/upload-url
 
-Get a presigned URL for uploading a photo.
+Get a presigned URL for uploading a Video.
 
 **Request Body:**
 ```json
 {
-  "filename": "IMG_20250101_120000.jpg",
-  "contentType": "image/jpeg",
+  "filename": "IMG_20250101_120000.mp4",
+  "contentType": "video/mp4",
   "createdAt": "2025-01-01T12:00:00Z (optional, defaults to now)",
-  "photoId": "string (optional, UUID — used for re-upload to same path)"
+  "videoId": "string (optional, UUID — used for re-upload to same path)"
 }
 ```
 
 **Response 200:**
 ```json
 {
-  "photoId": "string",
+  "videoId": "string",
   "uploadUrl": "string (presigned PUT URL)",
-  "headers": {"x-ms-blob-type": "BlockBlob", "Content-Type": "image/jpeg"},
+  "headers": {"x-ms-blob-type": "BlockBlob", "Content-Type": "video/mp4"},
   "expiresIn": 3600
 }
 ```
@@ -242,9 +242,9 @@ Get a presigned URL for uploading a photo.
 
 The client uploads the file directly to the presigned URL using HTTP PUT with the specified Content-Type header and any additional headers from the `headers` field.
 
-### POST /photos/{id}/confirm
+### POST /videos/{id}/confirm
 
-Confirm that upload is complete. Also used to restore a soft-deleted photo.
+Confirm that upload is complete. Also used to restore a soft-deleted Video.
 
 **Response 200:**
 ```json
@@ -254,9 +254,9 @@ Confirm that upload is complete. Also used to restore a soft-deleted photo.
 }
 ```
 
-### PUT /photos/{id}/labels
+### PUT /videos/{id}/labels
 
-Update labels for a photo. Replaces all labels with the provided list.
+Update labels for a Video. Replaces all labels with the provided list.
 
 **Request Body:**
 ```json
@@ -280,14 +280,14 @@ Update labels for a photo. Replaces all labels with the provided list.
 }
 ```
 
-### DELETE /photos/{id}
+### DELETE /videos/{id}
 
-Soft-delete a photo. Marks status as `deleted`. Storage data is preserved (recoverable via versioning).
+Soft-delete a Video. Marks status as `deleted`. Storage data is preserved (recoverable via versioning).
 
 **Response 200:**
 ```json
 {
-  "message": "Photo deleted."
+  "message": "Video deleted."
 }
 ```
 
@@ -297,7 +297,7 @@ Soft-delete a photo. Marks status as `deleted`. Storage data is preserved (recov
 
 Requires `share-upload-url` feature enabled.
 
-### POST /photos/share-upload-url
+### POST /videos/share-upload-url
 
 Generate a temporary upload page URL for third parties (no login required for uploaders).
 
@@ -321,7 +321,7 @@ Generate a temporary upload page URL for third parties (no login required for up
 
 Returns an HTML upload page. No authentication required. Token validated server-side.
 
-### POST /photos/share-upload
+### POST /videos/share-upload
 
 Get a presigned URL using a share token (no auth required).
 
@@ -329,8 +329,8 @@ Get a presigned URL using a share token (no auth required).
 ```json
 {
   "token": "string",
-  "filename": "photo.jpg",
-  "contentType": "image/jpeg"
+  "filename": "video.mp4",
+  "contentType": "video/mp4"
 }
 ```
 
@@ -338,7 +338,7 @@ Get a presigned URL using a share token (no auth required).
 ```json
 {
   "uploadUrl": "string (presigned PUT URL)",
-  "photoId": "string"
+  "videoId": "string"
 }
 ```
 
@@ -346,11 +346,11 @@ Get a presigned URL using a share token (no auth required).
 
 ## Share Download URL
 
-Requires `share-download-url` feature enabled. Allows sharing photos with non-app-users via a browser-accessible download page.
+Requires `share-download-url` feature enabled. Allows sharing Videos with non-app-users via a browser-accessible download page.
 
-### POST /photos/share-download-url
+### POST /videos/share-download-url
 
-Generate a temporary download page URL. Photos are filtered by label and optionally by date range.
+Generate a temporary download page URL. Videos are filtered by label and optionally by date range.
 
 **Request Body:**
 ```json
@@ -375,11 +375,11 @@ Generate a temporary download page URL. Photos are filtered by label and optiona
 
 ### GET /download-page?token={token}
 
-Returns an HTML page that displays thumbnails and allows downloading photos. No authentication required. Token validated server-side.
+Returns an HTML page that displays thumbnails and allows downloading Videos. No authentication required. Token validated server-side.
 
 The page should:
-- Display thumbnails of all photos matching the label (and date range if specified)
-- Allow individual photo download
+- Display thumbnails of all Videos matching the label (and date range if specified)
+- Allow individual Video download
 - Allow bulk download (zip)
 - Show expiration info
 - Be mobile-friendly
@@ -472,7 +472,7 @@ List shares you have sent to others.
 
 ### POST /shares/{shareId}/accept
 
-Accept a pending share request. Photos with the shared label become visible via GET /photos.
+Accept a pending share request. Videos with the shared label become visible via GET /videos.
 
 **Response 200:**
 ```json
@@ -530,7 +530,7 @@ All endpoints return errors in this format:
 
 ### Object Storage (S3 / Cloud Storage / Blob Storage)
 
-Photos are stored with versioning enabled for soft-delete recovery.
+Videos are stored with versioning enabled for soft-delete recovery.
 
 **Path format:**
 ```
@@ -538,7 +538,7 @@ users/{userId}/{YYYY}/{MM}/{DD}/{photoId}
 ```
 
 - `userId`: Auth provider user ID (Cognito sub, Firebase UID, etc.)
-- Date path: Derived from photo's `createdAt`
+- Date path: Derived from Video's `createdAt`
 - `photoId`: UUID generated by the app at upload time
 
 **Thumbnails:**
@@ -546,7 +546,7 @@ users/{userId}/{YYYY}/{MM}/{DD}/{photoId}
 thumbnails/{userId}/{YYYY}/{MM}/{DD}/{photoId}
 ```
 
-Generated automatically by the storage trigger function when a new photo is uploaded.
+Generated automatically by the storage trigger function when a new Video is uploaded.
 
 **CORS:** Must allow `GET`, `PUT`, `HEAD` from any origin for presigned URL uploads.
 
@@ -556,19 +556,19 @@ Single table/collection storing all records. Differentiated by `photoId` prefix.
 
 **Primary key:** `userId` (partition) + `photoId` (sort)
 
-#### Photo Record
+#### Video Record
 
 | Field | Type | Description |
 |-------|------|-------------|
 | userId | string | Owner's auth user ID |
 | photoId | string | UUID (app-generated) or path-based ID (storage trigger) |
 | filename | string | Original filename |
-| contentType | string | MIME type (e.g. `image/jpeg`) |
+| contentType | string | MIME type (e.g. `video/mp4`) |
 | s3Key / gcsKey / blobKey | string | Full storage path |
 | size | number | File size in bytes |
 | status | string | `uploading`, `uploaded`, `deleted` |
-| createdAt | string (ISO 8601) | Photo capture date (EXIF > path > upload time) |
-| labels | array of string | Label IDs assigned to this photo |
+| createdAt | string (ISO 8601) | Video capture date (EXIF > path > upload time) |
+| labels | array of string | Label IDs assigned to this Video |
 | labelNames | map (string → string) | Label ID → display name mapping |
 | thumbnailKey | string | Storage path for generated thumbnail |
 | deletedAt | string (ISO 8601) | When soft-deleted (only when status=deleted) |
@@ -610,13 +610,13 @@ Single table/collection storing all records. Differentiated by `photoId` prefix.
 
 ### Storage Trigger
 
-Automatically fires when a new object is created in the photos storage path (`users/` prefix).
+Automatically fires when a new object is created in the Videos storage path (`users/` prefix).
 
 **Behavior:**
 1. Skip if file size is 0 (folder placeholder)
 2. Skip if path contains `thumbnails/`
 3. Determine content type from file extension; if no extension, check storage metadata
-4. Extract capture date: EXIF DateTimeOriginal → path date (`/YYYY/MM/DD/`) → current time
+4. Extract capture date: path date → path date (`/YYYY/MM/DD/`) → current time
 5. Generate thumbnail (JPEG, max 300px)
 6. Create or update database record with `status: uploaded`
 

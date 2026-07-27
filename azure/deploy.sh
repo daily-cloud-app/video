@@ -1,5 +1,5 @@
 #!/bin/bash
-# Daily Cloud Photo 窶・Azure Deployment Script
+# Daily Cloud Video 窶・Azure Deployment Script
 # Deploys the complete backend infrastructure and function app code.
 #
 # Prerequisites:
@@ -16,14 +16,14 @@ set -e
 az config set extension.use_dynamic_install=no_without_prompt >/dev/null 2>&1 || true
 
 # 笏笏 Configuration 笏笏
-RESOURCE_GROUP="${1:-daily-cloud-photo-rg}"
+RESOURCE_GROUP="${1:-daily-cloud-video-rg}"
 LOCATION="${2:-eastus}"
-APP_NAME="${3:-dailycloudphoto}"
+APP_NAME="${3:-dailycloudvideo}"
 TEMPLATE_FILE="./azuredeploy.json"
 FUNCTION_APP_DIR="./function_app"
 
 echo "=============================================="
-echo " Daily Cloud Photo 窶・Azure Deployment"
+echo " Daily Cloud Video 窶・Azure Deployment"
 echo "=============================================="
 echo ""
 echo " Resource Group: $RESOURCE_GROUP"
@@ -300,7 +300,7 @@ fi
 
 # az CLI 縺ｮ zip 繝・・繝ｭ繧､繧剃ｽｿ逕ｨ・・unc 繝・・繝ｫ縺ｮ squashfs 繝・・繝ｭ繧､縺ｯ
 # WEBSITE_CONTENT* 險ｭ螳壹ｒ蜑企勁縺吶ｋ縺溘ａ Blob Trigger 縺悟虚菴懊＠縺ｪ縺上↑繧具ｼ・echo "  Creating deployment package..."
-DEPLOY_ZIP="/tmp/daily-cloud-photo-azure.zip"
+DEPLOY_ZIP="/tmp/daily-cloud-video-azure.zip"
 rm -f "$DEPLOY_ZIP"
 
 cd "$FUNCTION_APP_DIR"
@@ -350,17 +350,17 @@ else
 
     # 譌｢蟄倥・繧ｵ繝悶せ繧ｯ繝ｪ繝励す繝ｧ繝ｳ縺後≠繧後・蜑企勁縺励※蜀堺ｽ懈・
     az eventgrid event-subscription delete \
-        --name photo-upload-trigger \
+        --name video-upload-trigger \
         --source-resource-id "$STORAGE_ID" \
         --output none 2>/dev/null || true
 
     az eventgrid event-subscription create \
-        --name photo-upload-trigger \
+        --name video-upload-trigger \
         --source-resource-id "$STORAGE_ID" \
         --endpoint "$ENDPOINT_URL" \
         --endpoint-type webhook \
         --included-event-types Microsoft.Storage.BlobCreated \
-        --subject-begins-with "/blobServices/default/containers/photos/blobs/users/" \
+        --subject-begins-with "/blobServices/default/containers/videos/blobs/users/" \
         --output none 2>/dev/null
 
     if [ $? -eq 0 ]; then

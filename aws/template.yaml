@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Daily Cloud Photo Backend
+  Daily Cloud Video Backend
   Cognito + API Gateway + Lambda + S3 + DynamoDB
 
 # ============================================================
@@ -9,7 +9,7 @@ Description: >
 Parameters:
   AppName:
     Type: String
-    Default: daily-cloud-photo
+    Default: daily-cloud-video
     Description: Application name (used as prefix for resource names)
 
   RequireEmail:
@@ -24,10 +24,10 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Require phone number for signup
 
-  PhotosBucketName:
+  VideosBucketName:
     Type: String
     Default: ''
-    Description: S3 bucket name for photos (leave empty for auto-generated name)
+    Description: S3 bucket name for videos (leave empty for auto-generated name)
 
   EnableShareUrl:
     Type: String
@@ -43,11 +43,11 @@ Parameters:
 
   AppDisplayName:
     Type: String
-    Default: 'Daily Cloud Photo Backend'
+    Default: 'Daily Cloud Video Backend'
     Description: Display name returned by the /info endpoint
 
 Conditions:
-  UseCustomBucketName: !Not [!Equals [!Ref PhotosBucketName, '']]
+  UseCustomBucketName: !Not [!Equals [!Ref VideosBucketName, '']]
   EmailRequired: !Equals [!Ref RequireEmail, 'true']
 
 # ============================================================
@@ -139,7 +139,7 @@ Resources:
                   - lambda:PublishLayerVersion
                   - lambda:DeleteLayerVersion
                   - lambda:ListLayerVersions
-                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${AppName}-pillow'
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${AppName}-ffmpeg'
 
   BootstrapFunction:
     Type: AWS::Lambda::Function
@@ -206,24 +206,32 @@ Resources:
                       s3.put_object(Bucket=bucket, Key=lambda_key, Body=f.read())
                   print(f'Uploaded lambda.zip to s3://{bucket}/{lambda_key}')
 
-                  # 2. Build Pillow layer
-                  layer_dir = os.path.join(tmp, 'python')
+                  # 2. Build ffmpeg layer (download static ffmpeg binary)
+                  layer_dir = os.path.join(tmp, 'bin')
                   os.makedirs(layer_dir, exist_ok=True)
-                  subprocess.check_call([
-                      'pip', 'install', 'pillow', '-t', layer_dir, '--quiet',
-                      '--platform', 'manylinux2014_x86_64',
-                      '--implementation', 'cp',
-                      '--python-version', '3.12',
-                      '--only-binary=:all:',
-                  ])
 
-                  layer_zip_path = os.path.join(tmp, 'pillow-layer.zip')
+                  # Download static ffmpeg binary for Linux x86_64
+                  ffmpeg_url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'
+                  ffmpeg_tar_path = os.path.join(tmp, 'ffmpeg.tar.xz')
+                  urllib.request.urlretrieve(ffmpeg_url, ffmpeg_tar_path)
+
+                  # Extract ffmpeg binary from tarball
+                  import tarfile
+                  with tarfile.open(ffmpeg_tar_path, 'r:xz') as tar:
+                      for member in tar.getmembers():
+                          if member.name.endswith('/ffmpeg') and member.isfile():
+                              member.name = 'ffmpeg'
+                              tar.extract(member, layer_dir)
+                              break
+
+                  # Make executable
+                  ffmpeg_path = os.path.join(layer_dir, 'ffmpeg')
+                  os.chmod(ffmpeg_path, 0o755)
+
+                  layer_zip_path = os.path.join(tmp, 'ffmpeg-layer.zip')
                   with zipfile.ZipFile(layer_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                      for root, dirs, files in os.walk(layer_dir):
-                          for file in files:
-                              filepath = os.path.join(root, file)
-                              arcname = os.path.relpath(filepath, tmp)
-                              zf.write(filepath, arcname)
+                      # Store as bin/ffmpeg so it ends up at /opt/bin/ffmpeg in Lambda
+                      zf.write(ffmpeg_path, 'bin/ffmpeg')
 
                   with open(layer_zip_path, 'rb') as f:
                       layer_data = f.read()
@@ -234,7 +242,7 @@ Resources:
                       LayerName=layer_name,
                       Content={'S3Bucket': bucket, 'S3Key': layer_key},
                       CompatibleRuntimes=['python3.12'],
-                      Description='Pillow image processing library',
+                      Description='FFmpeg static binary for video frame extraction',
                   )
                   layer_arn = response['LayerVersionArn']
                   print(f'Published layer: {layer_arn}')
@@ -253,12 +261,12 @@ Resources:
       ServiceToken: !GetAtt BootstrapFunction.Arn
       Bucket: !Ref DeployBucket
       LambdaKey: lambda.zip
-      LayerKey: pillow-layer.zip
-      LayerName: !Sub '${AppName}-pillow'
+      LayerKey: ffmpeg-layer.zip
+      LayerName: !Sub '${AppName}-ffmpeg'
       SourceFiles:
-        - url: https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/lambda/index.py
+        - url: https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/lambda/index.py
           name: index.py
-        - url: https://raw.githubusercontent.com/daily-cloud-app/photo/main/aws/lambda/s3_trigger.py
+        - url: https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/lambda/s3_trigger.py
           name: s3_trigger.py
 
   # -- S3 (Photos) --
@@ -269,8 +277,8 @@ Resources:
     Properties:
       BucketName: !If
         - UseCustomBucketName
-        - !Ref PhotosBucketName
-        - !Sub '${AppName}-photos-${AWS::AccountId}'
+        - !Ref VideosBucketName
+        - !Sub '${AppName}-videos-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -306,7 +314,7 @@ Resources:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Delete
     Properties:
-      TableName: !Sub '${AppName}-photos'
+      TableName: !Sub '${AppName}-videos'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: userId
@@ -364,8 +372,8 @@ Resources:
                   - s3:HeadObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}'
-                  - !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}/*'
+                  - !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}/*'
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
@@ -397,8 +405,8 @@ Resources:
         Variables:
           USER_POOL_ID: !Ref CognitoUserPool
           USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
-          PHOTOS_BUCKET: !Ref PhotosBucket
-          PHOTOS_TABLE: !Ref PhotosTable
+          VIDEOS_BUCKET: !Ref PhotosBucket
+          VIDEOS_TABLE: !Ref PhotosTable
           REQUIRE_EMAIL: !Ref RequireEmail
           REQUIRE_PHONE: !Ref RequirePhone
           ENABLE_SHARE_URL: !Ref EnableShareUrl
@@ -433,7 +441,7 @@ Resources:
         - !GetAtt BootstrapInvocation.LayerArn
       Environment:
         Variables:
-          PHOTOS_TABLE: !Ref PhotosTable
+          VIDEOS_TABLE: !Ref PhotosTable
 
   S3TriggerPermission:
     Type: AWS::Lambda::Permission
@@ -442,7 +450,7 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
-      SourceArn: !Sub 'arn:aws:s3:::${AppName}-photos-${AWS::AccountId}'
+      SourceArn: !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}'
 
   # -- API Gateway (HTTP API) --
 
@@ -495,5 +503,5 @@ Outputs:
     Value: !Ref CognitoUserPoolClient
 
   PhotosBucketName:
-    Description: S3 bucket for photos
+    Description: S3 bucket for videos
     Value: !Ref PhotosBucket

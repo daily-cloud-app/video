@@ -2,12 +2,12 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "Daily Cloud Photo - Azure Backend (Function App + Cosmos DB + Blob Storage)"
+    "description": "Daily Cloud Video - Azure Backend (Function App + Cosmos DB + Blob Storage)"
   },
   "parameters": {
     "appName": {
       "type": "string",
-      "defaultValue": "dailycloudphoto",
+      "defaultValue": "dailycloudvideo",
       "metadata": {
         "description": "Base name for all resources (lowercase, no special characters)"
       },
@@ -82,10 +82,10 @@
     "appServicePlanName": "[concat(parameters('appName'), '-plan-', take(variables('uniqueSuffix'), 8))]",
     "cosmosAccountName": "[concat(parameters('appName'), '-db-', take(variables('uniqueSuffix'), 8))]",
     "appInsightsName": "[concat(parameters('appName'), '-ai-', take(variables('uniqueSuffix'), 8))]",
-    "cosmosDatabase": "dailycloudphoto",
-    "storageContainer": "photos",
+    "cosmosDatabase": "dailycloudvideo",
+    "storageContainer": "videos",
     "usersContainer": "users",
-    "photosContainer": "photos"
+    "videosContainer": "videos"
   },
   "resources": [
     {
