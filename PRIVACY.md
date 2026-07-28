@@ -31,19 +31,19 @@ These are never sent to the developer's servers — only to the backend server c
 
 | Data | Purpose | Destination |
 |------|---------|-------------|
-| Photo files | Cloud backup | User's own server |
-| Photo capture date | Timeline display & auto-labeling | User's own server |
-| File name | Photo identification | User's own server |
+| Video files | Cloud backup | User's own server |
+| Video capture date | Timeline display & auto-labeling | User's own server |
+| File name | Video identification | User's own server |
 
 #### Information Stored on Device
 
 | Data | Purpose |
 |------|---------|
 | Auth tokens | Maintaining login state |
-| Photo metadata (ID, date, sync status) | Offline display & sync management |
-| Thumbnail cache | Fast image display |
+| Video metadata (ID, date, sync status) | Offline display & sync management |
+| Thumbnail cache | Fast video display |
 | Server endpoint URL | Connection target |
-| Label information | Photo organization & filtering |
+| Label information | Video organization & filtering |
 
 All local data is stored in the app's private storage area, inaccessible to other apps. `android:allowBackup="false"` prevents inclusion in device backups.
 
@@ -66,8 +66,8 @@ The App communicates only with the server endpoint configured by the user. No da
 
 Communication occurs during:
 - Account creation & login
-- Photo upload (automatic on Wi-Fi)
-- Retrieving cloud photo list
+- Video upload (automatic on Wi-Fi)
+- Retrieving cloud video list
 - Label sync
 - Sharing features
 
@@ -76,33 +76,33 @@ All communication is encrypted via HTTPS (TLS).
 ### 5. Background Processing
 
 The App uses Android WorkManager for:
-- **Automatic photo upload**: Runs only on Wi-Fi
-- **New photo detection**: Detects newly added photos for upload
+- **Automatic video upload**: Runs only on Wi-Fi
+- **New video detection**: Detects newly added videos for upload
 
 Background processing follows OS battery optimization and does not interfere with device operation.
 
-### 6. Photo Access
+### 6. Video Access
 
 | Permission | Target | Purpose |
 |------------|--------|---------|
-| `READ_MEDIA_IMAGES` | Android 13+ | Photo library read access |
-| `READ_MEDIA_VISUAL_USER_SELECTED` | Android 14+ | Access to user-selected photos only |
-| `READ_EXTERNAL_STORAGE` | Android 12 and below | Photo library read access (compatibility) |
+| `READ_MEDIA_VIDEO` | Android 13+ | Video library read access |
+| `READ_MEDIA_VISUAL_USER_SELECTED` | Android 14+ | Access to user-selected videos only |
+| `READ_EXTERNAL_STORAGE` | Android 12 and below | Video library read access (compatibility) |
 
-Photos are uploaded only to the user's own server. Photo content is not analyzed or sent to third parties.
+Videos are uploaded only to the user's own server. Video content is not analyzed or sent to third parties.
 
 ### 7. Third-Party Sharing
 
 The App does not provide, sell, or share user data with third parties.
 
-The "label sharing" feature allows sharing photos with other users on the same server, but only through explicit user action.
+The "label sharing" feature allows sharing videos with other users on the same server, but only through explicit user action.
 
 ### 8. Data Deletion
 
-- **In-app deletion**: Photos become hidden. Recoverable from trash.
+- **In-app deletion**: Videos become hidden. Recoverable from trash.
 - **Empty trash**: Permanently removes data from the app's database.
-- **Cloud data**: Server-side photos are not deleted by app actions. Cloud resource management is the user's responsibility.
-- **Sync data reset**: Deletes all local data (cache, database). Does not affect device photos or server images.
+- **Cloud data**: Server-side videos are not deleted by app actions. Cloud resource management is the user's responsibility.
+- **Sync data reset**: Deletes all local data (cache, database). Does not affect device videos or server videos.
 
 ### 9. Security
 
@@ -117,7 +117,7 @@ The App is not intended for users under 13 years of age.
 
 ### 11. Disclaimer
 
-The App provides functionality to upload photos to cloud storage managed by the user. The developer is not liable for data loss, upload failures, cloud storage fees, configuration errors, or other damages arising from use of the App.
+The App provides functionality to upload videos to cloud storage managed by the user. The developer is not liable for data loss, upload failures, cloud storage fees, configuration errors, or other damages arising from use of the App.
 
 The App may be modified or discontinued without notice for improvements or bug fixes.
 
@@ -127,7 +127,7 @@ This policy may be updated as needed. Significant changes will be communicated t
 
 ### 13. Contact
 
-- GitHub: https://github.com/daily-cloud-app/photo/issues
+- GitHub: https://github.com/daily-cloud-app/video/issues
 
 ---
 
@@ -157,19 +157,19 @@ Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用
 
 | データ | 目的 | 送信先 |
 |--------|------|--------|
-| 写真ファイル | クラウドバックアップ | ユーザー自身のサーバー |
-| 写真の撮影日時 | 時系列表示・自動ラベル生成 | ユーザー自身のサーバー |
-| ファイル名 | 写真の識別 | ユーザー自身のサーバー |
+| 動画ファイル | クラウドバックアップ | ユーザー自身のサーバー |
+| 動画の撮影日時 | 時系列表示・自動ラベル生成 | ユーザー自身のサーバー |
+| ファイル名 | 動画の識別 | ユーザー自身のサーバー |
 
 #### 端末内に保存する情報
 
 | データ | 目的 |
 |--------|------|
 | 認証トークン | ログイン状態の維持 |
-| 写真メタデータ（ID、日時、同期状態） | オフライン表示・同期管理 |
-| サムネイルキャッシュ | 高速な画像表示 |
+| 動画メタデータ（ID、日時、同期状態） | オフライン表示・同期管理 |
+| サムネイルキャッシュ | 高速な動画表示 |
 | サーバーエンドポイントURL | 接続先の記憶 |
-| ラベル情報 | 写真の整理・フィルタリング |
+| ラベル情報 | 動画の整理・フィルタリング |
 
 これらはすべて端末内のアプリ専用領域に保存され、他のアプリからアクセスできません。`android:allowBackup="false"` により、端末バックアップにも含まれません。
 
@@ -192,8 +192,8 @@ Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用
 
 通信が発生する場面:
 - アカウント作成・ログイン時
-- 写真のアップロード時（Wi-Fi 接続時に自動実行）
-- クラウドの写真一覧を取得する時
+- 動画のアップロード時（Wi-Fi 接続時に自動実行）
+- クラウドの動画一覧を取得する時
 - ラベル情報の同期時
 - 共有機能の利用時
 
@@ -203,33 +203,33 @@ Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用
 
 本アプリは Android の WorkManager を使用し、以下のバックグラウンド処理を行います:
 
-- **写真の自動アップロード**: Wi-Fi 接続時にのみ実行されます
-- **新しい写真の検出**: 端末に追加された写真を検出し、アップロード対象として登録します
+- **動画の自動アップロード**: Wi-Fi 接続時にのみ実行されます
+- **新しい動画の検出**: 端末に追加された動画を検出し、アップロード対象として登録します
 
 バックグラウンド処理は OS のバッテリー最適化に従い、端末の動作を阻害しません。
 
-### 6. 写真へのアクセス
+### 6. 動画へのアクセス
 
 | 権限 | 対象バージョン | 用途 |
 |------|--------------|------|
-| `READ_MEDIA_IMAGES` | Android 13以降 | 写真ライブラリへの読み取り |
-| `READ_MEDIA_VISUAL_USER_SELECTED` | Android 14以降 | ユーザーが選択した写真のみへのアクセス |
-| `READ_EXTERNAL_STORAGE` | Android 12以下 | 写真ライブラリへの読み取り（互換用） |
+| `READ_MEDIA_VIDEO` | Android 13以降 | 動画ライブラリへの読み取り |
+| `READ_MEDIA_VISUAL_USER_SELECTED` | Android 14以降 | ユーザーが選択した動画のみへのアクセス |
+| `READ_EXTERNAL_STORAGE` | Android 12以下 | 動画ライブラリへの読み取り（互換用） |
 
-取得した写真はユーザー自身のサーバーにのみアップロードされます。写真の内容を解析したり、第三者に送信することはありません。
+取得した動画はユーザー自身のサーバーにのみアップロードされます。動画の内容を解析したり、第三者に送信することはありません。
 
 ### 7. 第三者への提供
 
 本アプリはユーザーデータを第三者に提供、販売、共有しません。
 
-「ラベル共有」機能により同じサーバーの他のユーザーと写真を共有できますが、ユーザー自身が明示的に操作した場合にのみ行われます。
+「ラベル共有」機能により同じサーバーの他のユーザーと動画を共有できますが、ユーザー自身が明示的に操作した場合にのみ行われます。
 
 ### 8. データの削除
 
-- **アプリ内での削除**: 写真を削除するとアプリ上で非表示になります。ゴミ箱機能から復元も可能です。
+- **アプリ内での削除**: 動画を削除するとアプリ上で非表示になります。ゴミ箱機能から復元も可能です。
 - **ゴミ箱の消去**: ゴミ箱を空にすると、アプリ内のデータが完全に削除されます。
-- **クラウド上のデータ**: サーバー上の写真ファイルはアプリ操作では削除されません。クラウドリソースの管理はユーザー自身の責任となります。
-- **同期データの初期化**: 設定画面から「同期データを初期化」を実行すると、アプリ内の全データ（キャッシュ、データベース）が削除されます。端末の写真やサーバーの画像には影響しません。
+- **クラウド上のデータ**: サーバー上の動画ファイルはアプリ操作では削除されません。クラウドリソースの管理はユーザー自身の責任となります。
+- **同期データの初期化**: 設定画面から「同期データを初期化」を実行すると、アプリ内の全データ（キャッシュ、データベース）が削除されます。端末の動画やサーバーの動画には影響しません。
 
 ### 9. セキュリティ
 
@@ -244,7 +244,7 @@ Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用
 
 ### 11. 免責事項
 
-本アプリは、ユーザー自身が管理するクラウドストレージへ写真をアップロードする機能を提供するものです。
+本アプリは、ユーザー自身が管理するクラウドストレージへ動画をアップロードする機能を提供するものです。
 
 開発者は、本アプリの利用に起因するデータの消失、アップロードの失敗、クラウドストレージの利用料金、設定の誤り、その他の損害について責任を負いません。
 
@@ -258,4 +258,4 @@ Daily Cloud Video（以下「本アプリ」）は、ユーザーが自身で用
 
 ### 13. お問い合わせ
 
-- GitHub: https://github.com/daily-cloud-app/photo/issues
+- GitHub: https://github.com/daily-cloud-app/video/issues
