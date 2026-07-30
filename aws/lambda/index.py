@@ -1472,10 +1472,13 @@ def _download_page(event):
     photo_entries = []
     for photo in photos:
         s3_key = photo.get('s3Key', f"users/{uid}/{photo['photoId']}")
-        thumb_key = photo.get('thumbnailKey', s3_key)
+        thumb_key = photo.get('thumbnailKey')
         try:
-            thumb_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': thumb_key}, ExpiresIn=3600)
-            full_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key}, ExpiresIn=3600)
+            full_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': s3_key}, ExpiresIn=86400)
+            # Only generate thumbnail URL if thumbnailKey exists (video frame extracted)
+            thumb_url = None
+            if thumb_key:
+                thumb_url = s3.generate_presigned_url('get_object', Params={'Bucket': VIDEOS_BUCKET, 'Key': thumb_key}, ExpiresIn=86400)
         except Exception:
             continue
         photo_entries.append({
@@ -1491,10 +1494,14 @@ def _download_page(event):
 
     photo_grid = ''
     for entry in photo_entries:
+        if entry['thumbUrl']:
+            thumb_html = f'<img src="{entry["thumbUrl"]}" alt="{entry["filename"]}" loading="lazy" />'
+        else:
+            thumb_html = '<div class="no-thumb"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"></polygon></svg></div>'
         photo_grid += f'''
         <div class="photo-card">
             <a href="{entry['fullUrl']}" target="_blank" download="{entry['filename']}">
-                <img src="{entry['thumbUrl']}" alt="{entry['filename']}" loading="lazy" />
+                {thumb_html}
             </a>
             <div class="photo-name">{entry['filename']}</div>
         </div>'''
@@ -1516,6 +1523,8 @@ def _download_page(event):
         .photo-card {{ border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
         .photo-card img {{ width: 100%; aspect-ratio: 1; object-fit: cover; cursor: pointer; transition: opacity 0.2s; }}
         .photo-card img:hover {{ opacity: 0.7; }}
+        .no-thumb {{ width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: #f0f0f0; color: #999; cursor: pointer; }}
+        .no-thumb:hover {{ background: #e0e0e0; }}
         .photo-name {{ padding: 4px 6px; font-size: 0.65rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #f9f9f9; }}
         button {{ background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; padding: 14px 32px; border-radius: 12px; font-size: 1em; font-weight: 600; cursor: pointer; width: 100%; transition: all 0.3s ease; }}
         button:hover:not(:disabled) {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4); }}
