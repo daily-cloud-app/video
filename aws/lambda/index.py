@@ -1363,7 +1363,7 @@ def _share_download_url(event):
         matching = [m for m in matching if m.get('createdAt', '') <= date_to]
 
     if not matching:
-        return _err(404, 'No photos found matching the criteria')
+        return _err(404, 'No videos found matching the criteria')
 
     # Generate token
     token = str(uuid.uuid4())
