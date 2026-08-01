@@ -16,10 +16,10 @@
 1. Click the **Cloud Shell** button above
 2. Create a project and link billing:
    ```bash
-   gcloud projects create daily-cloud-app --name="Daily Cloud App"
-   gcloud config set project daily-cloud-app
+   gcloud projects create daily-cloud-video --name="Daily Cloud Video"
+   gcloud config set project daily-cloud-video
    BILLING_ID=$(gcloud billing accounts list --format="value(ACCOUNT_ID)" --limit=1)
-   gcloud billing projects link daily-cloud-app --billing-account=$BILLING_ID
+   gcloud billing projects link daily-cloud-video --billing-account=$BILLING_ID
    ```
 3. Run the deploy script:
    ```bash
@@ -55,11 +55,11 @@ You can customize the deployment by setting environment variables before running
 ### Deleting Resources
 
 ```bash
-gcloud config set project daily-cloud-app
+gcloud config set project daily-cloud-video
 gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
 gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-app-videos
-gsutil rb gs://daily-cloud-app-videos
+gsutil -m rm -r gs://daily-cloud-video-videos
+gsutil rb gs://daily-cloud-video-videos
 gcloud firestore databases delete --database="(default)"
 ```
 
@@ -117,10 +117,10 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 1. 上記の **Cloud Shell** ボタンをクリック
 2. プロジェクトを作成し、課金を有効化:
    ```bash
-   gcloud projects create daily-cloud-app --name="Daily Cloud App"
-   gcloud config set project daily-cloud-app
+   gcloud projects create daily-cloud-video --name="Daily Cloud Video"
+   gcloud config set project daily-cloud-video
    BILLING_ID=$(gcloud billing accounts list --format="value(ACCOUNT_ID)" --limit=1)
-   gcloud billing projects link daily-cloud-app --billing-account=$BILLING_ID
+   gcloud billing projects link daily-cloud-video --billing-account=$BILLING_ID
    ```
 3. デプロイスクリプトを実行:
    ```bash
@@ -158,11 +158,11 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
 
 ```bash
-gcloud config set project daily-cloud-app
+gcloud config set project daily-cloud-video
 gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
 gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-app-videos
-gsutil rb gs://daily-cloud-app-videos
+gsutil -m rm -r gs://daily-cloud-video-videos
+gsutil rb gs://daily-cloud-video-videos
 gcloud firestore databases delete --database="(default)"
 ```
 
