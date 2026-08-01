@@ -55,13 +55,10 @@ You can customize the deployment by setting environment variables before running
 ### Deleting Resources
 
 ```bash
-gcloud config set project daily-cloud-video
-gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-video-videos
-gsutil rb gs://daily-cloud-video-videos
-gcloud firestore databases delete --database="(default)"
+gcloud projects delete daily-cloud-video
 ```
+
+This deletes all resources (Functions, Storage, Firestore, Auth) within the project. Recovery is possible within 30 days.
 
 ### Architecture
 
@@ -155,16 +152,11 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 
 ### リソースの削除
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
-
 ```bash
-gcloud config set project daily-cloud-video
-gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-video-videos
-gsutil rb gs://daily-cloud-video-videos
-gcloud firestore databases delete --database="(default)"
+gcloud projects delete daily-cloud-video
 ```
+
+プロジェクト内の全リソース（Functions、Storage、Firestore、Auth）が削除されます。30日以内であれば復元可能です。
 
 ### アーキテクチャ
 
