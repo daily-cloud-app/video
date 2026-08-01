@@ -214,6 +214,12 @@ echo -e "${YELLOW}[7/7] Deploying storage trigger function...${NC}"
 PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
 SA_EMAIL="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
+# Grant Eventarc Service Agent role (required for new projects)
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com" \
+    --role="roles/eventarc.serviceAgent" \
+    --quiet 2>/dev/null || true
+
 # Grant required roles for Eventarc
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:${SA_EMAIL}" \
@@ -232,6 +238,10 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:${GCS_SA}" \
     --role="roles/storage.admin" \
     --quiet 2>/dev/null || true
+
+# Wait for IAM propagation (new projects need time)
+echo -e "  Waiting for IAM permissions to propagate..."
+sleep 60
 
 gcloud functions deploy "${TRIGGER_FUNCTION_NAME}" \
     --gen2 \
