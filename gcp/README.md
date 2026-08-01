@@ -55,10 +55,19 @@ You can customize the deployment by setting environment variables before running
 ### Deleting Resources
 
 ```bash
-gcloud projects delete daily-cloud-video
+gcloud config set project daily-cloud-video
+gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
+gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
+gsutil -m rm -r gs://daily-cloud-video-videos
+gsutil rb gs://daily-cloud-video-videos
+gcloud firestore databases delete --database="(default)" -q
 ```
 
-This deletes all resources (Functions, Storage, Firestore, Auth) within the project. Recovery is possible within 30 days.
+Or delete the entire project (removes all resources at once):
+
+```bash
+gcloud projects delete daily-cloud-video
+```
 
 ### Architecture
 
@@ -153,10 +162,19 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 ### リソースの削除
 
 ```bash
-gcloud projects delete daily-cloud-video
+gcloud config set project daily-cloud-video
+gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
+gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
+gsutil -m rm -r gs://daily-cloud-video-videos
+gsutil rb gs://daily-cloud-video-videos
+gcloud firestore databases delete --database="(default)" -q
 ```
 
-プロジェクト内の全リソース（Functions、Storage、Firestore、Auth）が削除されます。30日以内であれば復元可能です。
+またはプロジェクトごと削除（全リソースを一括削除）：
+
+```bash
+gcloud projects delete daily-cloud-video
+```
 
 ### アーキテクチャ
 
