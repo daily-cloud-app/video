@@ -54,6 +54,8 @@ You can customize the deployment by setting environment variables before running
 
 ### Deleting Resources
 
+To keep the project and delete only the resources:
+
 ```bash
 gcloud config set project daily-cloud-video
 gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
@@ -63,7 +65,7 @@ gsutil rb gs://daily-cloud-video-videos
 gcloud firestore databases delete --database="(default)" -q
 ```
 
-Or delete the entire project (removes all resources at once):
+To delete the entire project (all resources shut down immediately, fully removed after 30 days):
 
 ```bash
 gcloud projects delete daily-cloud-video
@@ -161,6 +163,8 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 
 ### リソースの削除
 
+プロジェクトを再利用する場合（リソースのみを削除）：
+
 ```bash
 gcloud config set project daily-cloud-video
 gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
@@ -170,7 +174,7 @@ gsutil rb gs://daily-cloud-video-videos
 gcloud firestore databases delete --database="(default)" -q
 ```
 
-またはプロジェクトごと削除（全リソースを一括削除）：
+プロジェクトごと削除（全リソースを一括停止 → 30 日後に完全消去）：
 
 ```bash
 gcloud projects delete daily-cloud-video
