@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and adjust as needed.
+# deploy.sh generates these values automatically from environment variables,
+# so manual editing is only needed for advanced/standalone Terraform usage.
+
+project_id = "your-gcp-project-id"
+region     = "asia-northeast1"
+
+# bucket_name = "your-project-id-videos"   # defaults to <project_id>-videos
+
+require_email             = true
+require_phone             = false
+enable_share_url          = true
+enable_share_download_url = true
+enable_label_sharing      = true
+
+# share_upload_url_expiry_hours   = 24
+# share_download_url_expiry_hours = 72
+
+app_display_name          = "Daily Cloud Video Backend"
