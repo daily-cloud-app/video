@@ -39,6 +39,8 @@ You can also deploy via the Azure Portal GUI — fill in all parameters through 
 | requirePhone | `false` | Require phone number for signup |
 | enableShareUrl | `true` | Enable upload URL sharing feature |
 | enableLabelSharing | `true` | Enable label sharing between users |
+| shareUploadUrlExpiryHours | `24` | Expiry (hours) for share upload URLs |
+| shareDownloadUrlExpiryHours | `72` | Expiry (hours) for share download URLs |
 | appDisplayName | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
@@ -131,6 +133,8 @@ GUI でデプロイする場合は、Azure ポータルからパラメータを�
 | requirePhone | `false` | サインアップ時に電話番号必須 |
 | enableShareUrl | `true` | アップロード URL 共有機能 |
 | enableLabelSharing | `true` | ラベル共有機能 |
+| shareUploadUrlExpiryHours | `24` | アップロード共有 URL の有効期限（時間） |
+| shareDownloadUrlExpiryHours | `72` | ダウンロード共有 URL の有効期限（時間） |
 | appDisplayName | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続

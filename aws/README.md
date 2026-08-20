@@ -42,6 +42,8 @@ You can also deploy via the Console GUI — upload `template.yaml` and fill in p
 | PhotosBucketName | (auto-generated) | S3 bucket name for photos |
 | EnableShareUrl | `true` | Enable upload URL sharing feature |
 | EnableLabelSharing | `true` | Enable label sharing between users |
+| ShareUploadUrlExpiryHours | `24` | Expiry (hours) for share upload URLs |
+| ShareDownloadUrlExpiryHours | `72` | Expiry (hours) for share download URLs |
 | AppDisplayName | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
@@ -143,6 +145,8 @@ GUI でデプロイする場合は、コンソールから `template.yaml` を�
 | PhotosBucketName | (自動生成) | 動画用 S3 バケット名 |
 | EnableShareUrl | `true` | アップロード URL　共有機能 |
 | EnableLabelSharing | `true` | ラベル共有機能 |
+| ShareUploadUrlExpiryHours | `24` | アップロード共有 URL の有効期限（時間） |
+| ShareDownloadUrlExpiryHours | `72` | ダウンロード共有 URL の有効期限（時間） |
 | AppDisplayName | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続

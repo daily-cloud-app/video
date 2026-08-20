@@ -28,13 +28,17 @@ Returns server configuration. No authentication required.
   "name": "Daily Cloud Video Backend",
   "version": "1.0.0",
   "signupFields": ["username", "password", "email"],
-  "features": ["share-upload-url", "share-download-url", "label-sharing"]
+  "features": ["share-upload-url", "share-download-url", "label-sharing"],
+  "uploadUrlExpiryHours": 24,
+  "downloadUrlExpiryHours": 72
 }
 ```
 
 - `name`: Display name shown in the app
 - `signupFields`: Fields required for signup (dynamic based on server config)
 - `features`: Enabled features. Possible values: `share-upload-url`, `share-download-url`, `label-sharing`
+- `uploadUrlExpiryHours`: Default expiry (hours) for share upload URLs. Returned **only when** the `share-upload-url` feature is enabled. The app displays the expiry only when this value is present.
+- `downloadUrlExpiryHours`: Default expiry (hours) for share download URLs. Returned **only when** the `share-download-url` feature is enabled. The app displays the expiry only when this value is present.
 
 ---
 
@@ -308,6 +312,8 @@ Generate a temporary upload page URL for third parties (no login required for up
 }
 ```
 
+- `expiresHours`: Optional. When omitted, the server falls back to its default (`uploadUrlExpiryHours` from `/info`, configurable via deployment parameter).
+
 **Response 200:**
 ```json
 {
@@ -362,6 +368,8 @@ Generate a temporary download page URL. Videos are filtered by label and optiona
   "dateTo": "2025-12-31T23:59:59Z (optional)"
 }
 ```
+
+- `expiresHours`: Optional. When omitted, the server falls back to its default (`downloadUrlExpiryHours` from `/info`, configurable via deployment parameter).
 
 **Response 200:**
 ```json

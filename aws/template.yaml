@@ -41,6 +41,16 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable label sharing between users
 
+  ShareUploadUrlExpiryHours:
+    Type: Number
+    Default: 24
+    Description: Expiry (in hours) for share upload URLs
+
+  ShareDownloadUrlExpiryHours:
+    Type: Number
+    Default: 72
+    Description: Expiry (in hours) for share download URLs
+
   AppDisplayName:
     Type: String
     Default: 'Daily Cloud Video Backend'
@@ -411,6 +421,8 @@ Resources:
           REQUIRE_PHONE: !Ref RequirePhone
           ENABLE_SHARE_URL: !Ref EnableShareUrl
           ENABLE_LABEL_SHARING: !Ref EnableLabelSharing
+          SHARE_UPLOAD_URL_EXPIRY_HOURS: !Ref ShareUploadUrlExpiryHours
+          SHARE_DOWNLOAD_URL_EXPIRY_HOURS: !Ref ShareDownloadUrlExpiryHours
           APP_DISPLAY_NAME: !Ref AppDisplayName
 
   # Allow API Gateway to invoke Lambda

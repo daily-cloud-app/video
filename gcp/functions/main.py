@@ -25,6 +25,8 @@ REQUIRE_PHONE = os.environ.get('REQUIRE_PHONE', 'false') == 'true'
 ENABLE_SHARE_URL = os.environ.get('ENABLE_SHARE_URL', 'true') == 'true'
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get('ENABLE_SHARE_DOWNLOAD_URL', 'true') == 'true'
 ENABLE_LABEL_SHARING = os.environ.get('ENABLE_LABEL_SHARING', 'true') == 'true'
+SHARE_UPLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_UPLOAD_URL_EXPIRY_HOURS', '24'))
+SHARE_DOWNLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_DOWNLOAD_URL_EXPIRY_HOURS', '72'))
 APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Video Backend')
 SIGNED_URL_EXPIRY = 3600  # 1 hour
 
@@ -282,12 +284,19 @@ def _info(request):
     if ENABLE_LABEL_SHARING:
         features.append('label-sharing')
 
-    return _ok(200, {
+    info = {
         'name': APP_DISPLAY_NAME,
         'version': '1.0.0',
         'signupFields': fields,
         'features': features,
-    })
+    }
+    # Only include share URL expiry when the corresponding feature is enabled.
+    if ENABLE_SHARE_URL:
+        info['uploadUrlExpiryHours'] = SHARE_UPLOAD_URL_EXPIRY_HOURS
+    if ENABLE_SHARE_DOWNLOAD_URL:
+        info['downloadUrlExpiryHours'] = SHARE_DOWNLOAD_URL_EXPIRY_HOURS
+
+    return _ok(200, info)
 
 
 # ============================================================
@@ -935,7 +944,8 @@ def _share_upload_url(request):
         return _err(401, 'Authentication required')
 
     body = request.get_json(silent=True) or {}
-    expires_hours = int(body.get('expiresHours', 24))
+    # Fall back to the server default when the request omits expiresHours.
+    expires_hours = int(body.get('expiresHours', SHARE_UPLOAD_URL_EXPIRY_HOURS))
     label_id = body.get('labelId', '') or ''
     label_name = body.get('labelName', '') or ''
 
@@ -1449,7 +1459,8 @@ def _share_download_url(request):
     data = request.get_json(silent=True) or {}
     label_id = data.get('labelId', '')
     label_name = data.get('labelName', '')
-    expires_hours = int(data.get('expiresHours', 72))
+    # Fall back to the server default when the request omits expiresHours.
+    expires_hours = int(data.get('expiresHours', SHARE_DOWNLOAD_URL_EXPIRY_HOURS))
 
     if not label_id:
         return _err(400, 'labelId is required')

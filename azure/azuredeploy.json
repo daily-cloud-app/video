@@ -73,6 +73,20 @@
       "metadata": {
         "description": "Enable label sharing between users"
       }
+    },
+    "shareUploadUrlExpiryHours": {
+      "type": "int",
+      "defaultValue": 24,
+      "metadata": {
+        "description": "Expiry (in hours) for share upload URLs"
+      }
+    },
+    "shareDownloadUrlExpiryHours": {
+      "type": "int",
+      "defaultValue": 72,
+      "metadata": {
+        "description": "Expiry (in hours) for share download URLs"
+      }
     }
   },
   "variables": {
@@ -338,6 +352,14 @@
             {
               "name": "ENABLE_LABEL_SHARING",
               "value": "[parameters('enableLabelSharing')]"
+            },
+            {
+              "name": "SHARE_UPLOAD_URL_EXPIRY_HOURS",
+              "value": "[string(parameters('shareUploadUrlExpiryHours'))]"
+            },
+            {
+              "name": "SHARE_DOWNLOAD_URL_EXPIRY_HOURS",
+              "value": "[string(parameters('shareDownloadUrlExpiryHours'))]"
             },
             {
               "name": "FUNCTION_APP_URL",

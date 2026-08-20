@@ -44,6 +44,8 @@ You can customize the deployment by setting environment variables before running
 | REQUIRE_PHONE | `false` | Require phone number for signup |
 | ENABLE_SHARE_URL | `true` | Enable upload URL sharing feature |
 | ENABLE_LABEL_SHARING | `true` | Enable label sharing between users |
+| SHARE_UPLOAD_URL_EXPIRY_HOURS | `24` | Expiry (hours) for share upload URLs |
+| SHARE_DOWNLOAD_URL_EXPIRY_HOURS | `72` | Expiry (hours) for share download URLs |
 | APP_DISPLAY_NAME | `Daily Cloud Video Backend` | Display name shown in the app |
 
 ### Connecting the App
@@ -155,6 +157,8 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 | REQUIRE_PHONE | `false` | サインアップ時に電話番号必須 |
 | ENABLE_SHARE_URL | `true` | アップロード URL 共有機能 |
 | ENABLE_LABEL_SHARING | `true` | ラベル共有機能 |
+| SHARE_UPLOAD_URL_EXPIRY_HOURS | `24` | アップロード共有 URL の有効期限（時間） |
+| SHARE_DOWNLOAD_URL_EXPIRY_HOURS | `72` | ダウンロード共有 URL の有効期限（時間） |
 | APP_DISPLAY_NAME | `Daily Cloud Video Backend` | アプリでの表示名 |
 
 ### アプリでの接続
