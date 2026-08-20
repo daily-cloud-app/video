@@ -66,6 +66,14 @@
         "description": "Enable upload URL sharing feature"
       }
     },
+    "enableShareDownloadUrl": {
+      "type": "string",
+      "defaultValue": "true",
+      "allowedValues": ["true", "false"],
+      "metadata": {
+        "description": "Enable download URL sharing feature"
+      }
+    },
     "enableLabelSharing": {
       "type": "string",
       "defaultValue": "true",
@@ -348,6 +356,10 @@
             {
               "name": "ENABLE_SHARE_URL",
               "value": "[parameters('enableShareUrl')]"
+            },
+            {
+              "name": "ENABLE_SHARE_DOWNLOAD_URL",
+              "value": "[parameters('enableShareDownloadUrl')]"
             },
             {
               "name": "ENABLE_LABEL_SHARING",

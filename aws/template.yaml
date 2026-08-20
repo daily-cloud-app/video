@@ -35,6 +35,12 @@ Parameters:
     AllowedValues: ['true', 'false']
     Description: Enable share upload URL feature
 
+  EnableShareDownloadUrl:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable share download URL feature
+
   EnableLabelSharing:
     Type: String
     Default: 'true'
@@ -420,6 +426,7 @@ Resources:
           REQUIRE_EMAIL: !Ref RequireEmail
           REQUIRE_PHONE: !Ref RequirePhone
           ENABLE_SHARE_URL: !Ref EnableShareUrl
+          ENABLE_SHARE_DOWNLOAD_URL: !Ref EnableShareDownloadUrl
           ENABLE_LABEL_SHARING: !Ref EnableLabelSharing
           SHARE_UPLOAD_URL_EXPIRY_HOURS: !Ref ShareUploadUrlExpiryHours
           SHARE_DOWNLOAD_URL_EXPIRY_HOURS: !Ref ShareDownloadUrlExpiryHours

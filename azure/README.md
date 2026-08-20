@@ -38,6 +38,7 @@ You can also deploy via the Azure Portal GUI — fill in all parameters through 
 | requireEmail | `true` | Require email for signup |
 | requirePhone | `false` | Require phone number for signup |
 | enableShareUrl | `true` | Enable upload URL sharing feature |
+| enableShareDownloadUrl | `true` | Enable download URL sharing feature |
 | enableLabelSharing | `true` | Enable label sharing between users |
 | shareUploadUrlExpiryHours | `24` | Expiry (hours) for share upload URLs |
 | shareDownloadUrlExpiryHours | `72` | Expiry (hours) for share download URLs |
@@ -132,6 +133,7 @@ GUI でデプロイする場合は、Azure ポータルからパラメータを�
 | requireEmail | `true` | サインアップ時にメール必須 |
 | requirePhone | `false` | サインアップ時に電話番号必須 |
 | enableShareUrl | `true` | アップロード URL 共有機能 |
+| enableShareDownloadUrl | `true` | ダウンロード URL 共有機能 |
 | enableLabelSharing | `true` | ラベル共有機能 |
 | shareUploadUrlExpiryHours | `24` | アップロード共有 URL の有効期限（時間） |
 | shareDownloadUrlExpiryHours | `72` | ダウンロード共有 URL の有効期限（時間） |
