@@ -77,6 +77,7 @@ resource "google_cloudfunctions2_function" "api" {
     google_project_iam_member.build_log_writer,
     google_project_iam_member.build_artifact_writer,
     google_project_iam_member.build_storage_viewer,
+    time_sleep.wait_build_iam,
   ]
 }
 
@@ -141,5 +142,6 @@ resource "google_cloudfunctions2_function" "trigger" {
     google_project_iam_member.build_log_writer,
     google_project_iam_member.build_artifact_writer,
     google_project_iam_member.build_storage_viewer,
+    time_sleep.wait_build_iam,
   ]
 }

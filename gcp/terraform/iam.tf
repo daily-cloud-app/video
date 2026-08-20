@@ -109,6 +109,21 @@ resource "google_project_iam_member" "build_storage_viewer" {
   member  = "serviceAccount:${google_service_account.build.email}"
 }
 
+# IAM bindings are eventually consistent: the grants above can take up to a
+# minute to propagate. Cloud Functions Gen2 builds start almost immediately,
+# so a fresh project often fails the first apply with
+# "Access to bucket gcf-v2-sources-* denied ... grant Storage Object Viewer".
+# Wait after granting the build SA roles so the first apply succeeds.
+resource "time_sleep" "wait_build_iam" {
+  create_duration = "60s"
+
+  depends_on = [
+    google_project_iam_member.build_log_writer,
+    google_project_iam_member.build_artifact_writer,
+    google_project_iam_member.build_storage_viewer,
+  ]
+}
+
 # ── Cloud Storage service agent ──
 
 # The GCS service agent must be able to publish object events to
