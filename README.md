@@ -30,7 +30,7 @@ You are not limited to these providers — any server that implements the [API s
 | Database | DynamoDB | Firestore | Cosmos DB |
 | File Storage | S3 | Cloud Storage | Blob Storage |
 | Auth | Cognito | Firebase Auth | Custom JWT |
-| IaC | CloudFormation | gcloud CLI | ARM Template |
+| IaC | CloudFormation | Terraform | ARM Template |
 | Thumbnail Trigger | S3 Event | Eventarc | Blob Trigger |
 
 ---
@@ -60,5 +60,5 @@ Daily Cloud Video アプリ用のバックエンドサンプル実装です。
 | データベース | DynamoDB | Firestore | Cosmos DB |
 | ファイルストレージ | S3 | Cloud Storage | Blob Storage |
 | 認証 | Cognito | Firebase Auth | Custom JWT |
-| IaC | CloudFormation | gcloud CLI | ARM Template |
+| IaC | CloudFormation | Terraform | ARM Template |
 | サムネイルトリガー | S3 Event | Eventarc | Blob Trigger |
