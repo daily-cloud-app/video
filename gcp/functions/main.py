@@ -25,10 +25,11 @@ REQUIRE_PHONE = os.environ.get('REQUIRE_PHONE', 'false') == 'true'
 ENABLE_SHARE_URL = os.environ.get('ENABLE_SHARE_URL', 'true') == 'true'
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get('ENABLE_SHARE_DOWNLOAD_URL', 'true') == 'true'
 ENABLE_LABEL_SHARING = os.environ.get('ENABLE_LABEL_SHARING', 'true') == 'true'
-SHARE_UPLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_UPLOAD_URL_EXPIRY_HOURS', '24'))
-SHARE_DOWNLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_DOWNLOAD_URL_EXPIRY_HOURS', '72'))
 APP_DISPLAY_NAME = os.environ.get('APP_DISPLAY_NAME', 'Daily Cloud Video Backend')
 SIGNED_URL_EXPIRY = 3600  # 1 hour
+# Share URL validity (hours). Admin-configurable; surfaced via /info.
+SHARE_UPLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_UPLOAD_URL_EXPIRY_HOURS', '24'))
+SHARE_DOWNLOAD_URL_EXPIRY_HOURS = int(os.environ.get('SHARE_DOWNLOAD_URL_EXPIRY_HOURS', '72'))
 
 # ── Initialize Firebase & GCP Clients ──
 if not firebase_admin._apps:
@@ -88,6 +89,91 @@ def _get_user_email(uid):
         return uid
 
 
+# ============================================================
+# Identity Platform / Username-Email mapping helpers
+# ============================================================
+
+USERS_COLLECTION = 'users'
+
+
+def _normalize_username(username):
+    """Normalize a username for use as a Firestore document ID."""
+    return username.strip().lower()
+
+
+def _get_user_mapping(username):
+    """Look up the username→{uid,email} mapping in Firestore.
+
+    Returns the mapping dict, or None if not found.
+    """
+    try:
+        doc = db.collection(USERS_COLLECTION).document(_normalize_username(username)).get()
+        if doc.exists:
+            return doc.to_dict()
+    except Exception:
+        pass
+    return None
+
+
+def _save_user_mapping(username, uid, email):
+    """Persist the username→{uid,email} mapping in Firestore."""
+    db.collection(USERS_COLLECTION).document(_normalize_username(username)).set({
+        'uid': uid,
+        'username': username,
+        'email': email,
+        'createdAt': datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _resolve_email(username):
+    """Resolve a username (or email) to the account email address.
+
+    If the input already looks like an email, it is returned as-is.
+    Otherwise the Firestore users mapping is consulted.
+    Returns None if it cannot be resolved.
+    """
+    if '@' in username:
+        return username
+    mapping = _get_user_mapping(username)
+    if mapping:
+        return mapping.get('email')
+    return None
+
+
+def _identity_api_key():
+    """Return the Identity Platform (Firebase) Web API key."""
+    key = os.environ.get('FIREBASE_API_KEY', '')
+    if key and key != 'NOT_SET':
+        return key
+    return _get_firebase_api_key()
+
+
+def _send_oob_code(id_token=None, email=None, request_type='VERIFY_EMAIL'):
+    """Send an Identity Platform out-of-band email (verification or reset).
+
+    VERIFY_EMAIL requires an idToken. PASSWORD_RESET requires an email.
+    Returns True on success (best effort).
+    """
+    import requests as http_requests
+
+    api_key = _identity_api_key()
+    if not api_key:
+        return False
+
+    url = f'https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}'
+    payload = {'requestType': request_type}
+    if id_token:
+        payload['idToken'] = id_token
+    if email:
+        payload['email'] = email
+
+    try:
+        resp = http_requests.post(url, json=payload, timeout=10)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def _prefix(uid):
     """Storage path prefix for a user."""
     return f'users/{uid}/'
@@ -116,7 +202,7 @@ def _query_user_photos(user_id, prefix=None, limit=None):
         query = query.where('photoId', '>=', prefix).where('photoId', '<', prefix + '\uffff')
     if limit:
         query = query.limit(limit)
-    return query.stream()
+    return [doc.to_dict() for doc in query.stream()]
 
 
 def _generate_signed_url(blob_name, method='GET', content_type=None, expiry=SIGNED_URL_EXPIRY):
@@ -290,7 +376,7 @@ def _info(request):
         'signupFields': fields,
         'features': features,
     }
-    # Only include share URL expiry when the corresponding feature is enabled.
+    # Advertise share URL validity so the app can show it in the result popup.
     if ENABLE_SHARE_URL:
         info['uploadUrlExpiryHours'] = SHARE_UPLOAD_URL_EXPIRY_HOURS
     if ENABLE_SHARE_DOWNLOAD_URL:
@@ -304,47 +390,84 @@ def _info(request):
 # ============================================================
 
 def _signup(request):
+    """Create a user via Identity Platform and send a verification email.
+
+    Uses the Identity Platform REST API (accounts:signUp) so that email
+    verification works with the standard Identity Platform flow. A
+    username→email mapping is stored in Firestore so users can sign in
+    with their username.
+    """
+    import requests as http_requests
+
     body = request.get_json(silent=True) or {}
     username = body.get('username', '').strip()
     password = body.get('password', '')
     email = body.get('email', '').strip()
-    phone = body.get('phone', '').strip()
 
     if not username or not password:
         return _err(400, 'username and password are required')
 
+    if REQUIRE_EMAIL and not email:
+        return _err(400, 'email is required', 'InvalidParameter')
+
+    # Username must be unique
+    if _get_user_mapping(username) is not None:
+        return _err(409, 'Username already exists', 'UsernameExists')
+
+    api_key = _identity_api_key()
+    if not api_key:
+        return _err(500, 'Identity Platform API key not configured')
+
+    # If no email was provided (REQUIRE_EMAIL=false), synthesize a placeholder
+    user_email = email if email else f'{_normalize_username(username)}@placeholder.local'
+
+    # Create the account via Identity Platform REST API
+    signup_url = f'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}'
     try:
-        # Create Firebase user with email as identifier
-        # Use email if provided, otherwise create from username
-        user_email = email if email else f'{username}@placeholder.local'
-        create_kwargs = {
+        resp = http_requests.post(signup_url, json={
             'email': user_email,
             'password': password,
-            'display_name': username,
-        }
-        if phone:
-            create_kwargs['phone_number'] = phone
-
-        user = firebase_auth.create_user(**create_kwargs)
-
-        # If email verification is required, send verification email
-        # Firebase handles this via client SDK; server just creates user
-        confirmation_required = REQUIRE_EMAIL and email
-
-        return _ok(201, {
-            'message': 'User created. Confirmation may be required.',
-            'confirmationRequired': False,
-        })
-
-    except firebase_admin.exceptions.AlreadyExistsError:
-        return _err(409, 'Username already exists', 'UsernameExists')
-    except ValueError as e:
-        return _err(400, str(e), 'InvalidParameter')
+            'returnSecureToken': True,
+        }, timeout=10)
+        data = resp.json()
     except Exception as e:
-        error_msg = str(e)
+        return _err(500, f'Signup request failed: {e}')
+
+    if resp.status_code != 200:
+        error_msg = data.get('error', {}).get('message', '')
+        if 'EMAIL_EXISTS' in error_msg:
+            return _err(409, 'Email already exists', 'EmailExists')
         if 'WEAK_PASSWORD' in error_msg:
             return _err(400, 'Password is too weak', 'InvalidPassword')
-        return _err(500, error_msg)
+        if 'INVALID_EMAIL' in error_msg:
+            return _err(400, 'Invalid email address', 'InvalidParameter')
+        return _err(400, error_msg or 'Signup failed')
+
+    uid = data.get('localId', '')
+    id_token = data.get('idToken', '')
+
+    # Set display name to the username (best effort)
+    try:
+        firebase_auth.update_user(uid, display_name=username)
+    except Exception:
+        pass
+
+    # Persist the username→email mapping
+    try:
+        _save_user_mapping(username, uid, user_email)
+    except Exception as e:
+        return _err(500, f'Failed to save user mapping: {e}')
+
+    # Send a standard verification email when email is required
+    confirmation_required = False
+    if REQUIRE_EMAIL and email:
+        _send_oob_code(id_token=id_token, request_type='VERIFY_EMAIL')
+        confirmation_required = True
+
+    return _ok(201, {
+        'message': 'User created. Please verify your email.' if confirmation_required else 'User created.',
+        'confirmationRequired': confirmation_required,
+    })
 
 
 # ============================================================
@@ -352,57 +475,44 @@ def _signup(request):
 # ============================================================
 
 def _confirm(request):
-    """
-    Confirm user email verification.
-    In Firebase, email verification is handled client-side via email links.
-    This endpoint is provided for API compatibility; it verifies the user
-    manually if called with proper credentials.
+    """Check whether the user's email has been verified.
+
+    Identity Platform email verification is performed by the user clicking
+    the link in the verification email. This endpoint does NOT force
+    verification — it only reports the current status. The client calls
+    this after the user has opened the email link.
+
+    The `confirmationCode` field (if sent by the client) is ignored for
+    Identity Platform, since verification is link-based.
     """
     body = request.get_json(silent=True) or {}
     username = body.get('username', '').strip()
-    code = body.get('confirmationCode', '').strip()
 
-    if not username or not code:
-        return _err(400, 'username and confirmationCode are required')
+    if not username:
+        return _err(400, 'username is required')
+
+    # Resolve username → uid
+    mapping = _get_user_mapping(username)
+    uid = mapping.get('uid') if mapping else None
+    if not uid and '@' in username:
+        try:
+            uid = firebase_auth.get_user_by_email(username).uid
+        except Exception:
+            uid = None
+    if not uid:
+        return _err(404, 'User not found', 'UserNotFound')
 
     try:
-        # In Firebase, confirmation is typically done via email link.
-        # For API compatibility, we look up user and mark as verified.
-        user = firebase_auth.get_user_by_email(username)
-        if not user:
-            return _err(404, 'User not found', 'UserNotFound')
-
-        # Verify the confirmation code from Firestore
-        code_doc = db.collection('confirmation_codes').document(username).get()
-        if not code_doc.exists:
-            return _err(400, 'Invalid confirmation code', 'CodeMismatch')
-
-        code_data = code_doc.to_dict()
-        if code_data.get('code') != code:
-            return _err(400, 'Invalid confirmation code', 'CodeMismatch')
-
-        # Check expiration
-        expires_at = code_data.get('expiresAt', '')
-        if expires_at:
-            try:
-                exp_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                if datetime.now(timezone.utc) > exp_dt:
-                    return _err(400, 'Confirmation code expired', 'ExpiredCode')
-            except Exception:
-                pass
-
-        # Mark user as verified
-        firebase_auth.update_user(user.uid, email_verified=True)
-
-        # Clean up code
-        db.collection('confirmation_codes').document(username).delete()
-
-        return _ok(200, {'message': 'User confirmed.'})
-
+        user = firebase_auth.get_user(uid)
     except firebase_auth.UserNotFoundError:
         return _err(404, 'User not found', 'UserNotFound')
     except Exception as e:
         return _err(500, str(e))
+
+    if not user.email_verified:
+        return _err(400, 'Email is not yet verified', 'UserNotConfirmed')
+
+    return _ok(200, {'message': 'User confirmed.'})
 
 
 # ============================================================
@@ -426,24 +536,15 @@ def _signin(request):
     try:
         import requests as http_requests
 
-        # Use Firebase Auth REST API to sign in
-        api_key = os.environ.get('FIREBASE_API_KEY', '')
+        api_key = _identity_api_key()
         if not api_key:
-            # Try to get Web API key from Firebase project config
-            api_key = _get_firebase_api_key()
+            return _err(500, 'Identity Platform API key not configured')
 
-        if not api_key:
-            return _err(500, 'Firebase API key not configured')
-
-        # Resolve username to email if needed
-        email = username
-        if '@' not in username:
-            try:
-                user = firebase_auth.get_user_by_email(f'{username}@placeholder.local')
-                email = user.email
-            except Exception:
-                # Try display_name lookup
-                email = username
+        # Resolve username → email via Firestore mapping (or use email directly)
+        email = _resolve_email(username)
+        if not email:
+            # No mapping found; if it looks like an email use it, else fail
+            return _err(401, 'Incorrect username or password', 'NotAuthorized')
 
         url = f'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}'
         payload = {
@@ -456,11 +557,25 @@ def _signin(request):
 
         if resp.status_code != 200:
             error_message = data.get('error', {}).get('message', '')
-            if 'EMAIL_NOT_FOUND' in error_message or 'INVALID_LOGIN_CREDENTIALS' in error_message:
+            if 'EMAIL_NOT_FOUND' in error_message or 'INVALID_LOGIN_CREDENTIALS' in error_message or 'INVALID_PASSWORD' in error_message:
                 return _err(401, 'Incorrect username or password', 'NotAuthorized')
             if 'USER_DISABLED' in error_message:
                 return _err(403, 'User account is disabled', 'UserDisabled')
             return _err(401, 'Authentication failed', 'NotAuthorized')
+
+        # Enforce email verification when required
+        if REQUIRE_EMAIL:
+            uid = data.get('localId', '')
+            verified = False
+            if uid:
+                try:
+                    verified = firebase_auth.get_user(uid).email_verified
+                except Exception:
+                    verified = False
+            # Placeholder emails (REQUIRE_EMAIL=false accounts) are exempt,
+            # but when REQUIRE_EMAIL=true every real account must be verified.
+            if not verified:
+                return _err(403, 'User is not confirmed', 'UserNotConfirmed')
 
         return _ok(200, {
             'accessToken': data.get('idToken', ''),
@@ -526,36 +641,16 @@ def _forgot_password(request):
     if not username:
         return _err(400, 'username is required')
 
+    # Resolve username → email (best effort). Never reveal whether the
+    # account exists — always return the same response.
     try:
-        import requests as http_requests
-
-        api_key = os.environ.get('FIREBASE_API_KEY', '')
-        if not api_key:
-            api_key = _get_firebase_api_key()
-
-        # Resolve email
-        email = username
-        if '@' not in username:
-            try:
-                user = firebase_auth.get_user_by_email(f'{username}@placeholder.local')
-                email = user.email
-            except Exception:
-                pass
-
-        # Send password reset email via Firebase REST API
-        url = f'https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}'
-        payload = {
-            'requestType': 'PASSWORD_RESET',
-            'email': email,
-        }
-        http_requests.post(url, json=payload, timeout=10)
-
-        # Always return success for security (don't reveal if user exists)
-        return _ok(200, {'message': 'Confirmation code sent.'})
-
+        email = _resolve_email(username)
+        if email:
+            _send_oob_code(email=email, request_type='PASSWORD_RESET')
     except Exception:
-        # For security, always return success
-        return _ok(200, {'message': 'Confirmation code sent.'})
+        pass
+
+    return _ok(200, {'message': 'If the account exists, a password reset email has been sent.'})
 
 
 # ============================================================
@@ -575,9 +670,9 @@ def _reset_password(request):
     try:
         import requests as http_requests
 
-        api_key = os.environ.get('FIREBASE_API_KEY', '')
+        api_key = _identity_api_key()
         if not api_key:
-            api_key = _get_firebase_api_key()
+            return _err(500, 'Identity Platform API key not configured')
 
         # Use Firebase REST API to confirm password reset
         url = f'https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key={api_key}'
@@ -636,7 +731,12 @@ def _videos_list(request):
         if item.get('status') == 'deleted':
             continue
         if item.get('status') == 'uploading':
-            continue        # Generate signed URLs
+            continue
+        # Exclude zero-size records (no actual file)
+        if int(item.get('size', 0)) == 0:
+            continue
+
+        # Generate signed URLs
         gcs_key = item.get('gcsKey', f"{_prefix(uid)}{photo_id}")
         thumbnail_key = item.get('thumbnailKey')
 
@@ -944,7 +1044,6 @@ def _share_upload_url(request):
         return _err(401, 'Authentication required')
 
     body = request.get_json(silent=True) or {}
-    # Fall back to the server default when the request omits expiresHours.
     expires_hours = int(body.get('expiresHours', SHARE_UPLOAD_URL_EXPIRY_HOURS))
     label_id = body.get('labelId', '') or ''
     label_name = body.get('labelName', '') or ''
@@ -1218,7 +1317,7 @@ def _share_upload(request):
 
     return _ok(200, {
         'uploadUrl': url,
-        'photoId': photo_id,
+        'videoId': photo_id,
     })
 
 
@@ -1449,7 +1548,7 @@ def _delete_share(request, path):
 # ============================================================
 
 def _share_download_url(request):
-    """Generate a download page URL for sharing photos by label."""
+    """Generate a download page URL for sharing videos by label."""
     if not ENABLE_SHARE_DOWNLOAD_URL:
         return _err(403, 'Share URL feature is disabled')
     uid = _get_user_id(request)
@@ -1459,13 +1558,12 @@ def _share_download_url(request):
     data = request.get_json(silent=True) or {}
     label_id = data.get('labelId', '')
     label_name = data.get('labelName', '')
-    # Fall back to the server default when the request omits expiresHours.
     expires_hours = int(data.get('expiresHours', SHARE_DOWNLOAD_URL_EXPIRY_HOURS))
 
     if not label_id:
         return _err(400, 'labelId is required')
 
-    # Count matching photos
+    # Count matching videos
     docs = _query_user_photos(uid)
     matching = [
         d for d in docs
@@ -1479,12 +1577,15 @@ def _share_download_url(request):
     ]
 
     if not matching:
-        return _err(404, 'No photos found matching the criteria')
+        return _err(404, 'No videos found matching the criteria')
 
     token = str(uuid.uuid4())
 
     # Save token to Firestore
-    db_client.collection('users').document(uid).collection('photos').document(f'download_token:{token}').set({
+    doc_ref = db.collection(VIDEOS_COLLECTION).document(_doc_id(uid, f'download_token:{token}'))
+    doc_ref.set({
+        'userId': uid,
+        'photoId': f'download_token:{token}',
         'status': 'active',
         'createdAt': datetime.now(timezone.utc).isoformat(),
         'expiresHours': expires_hours,
@@ -1509,7 +1610,7 @@ def _share_download_url(request):
 # ============================================================
 
 def _download_page(request):
-    """Render an HTML download page for shared photos."""
+    """Render an HTML download page for shared videos."""
     if not ENABLE_SHARE_DOWNLOAD_URL:
         return _html_response(403, '<h1>This feature is disabled.</h1>')
 
@@ -1517,21 +1618,19 @@ def _download_page(request):
     if not token:
         return _html_response(400, '<h1>Invalid link.</h1>')
 
-    # Find token record by scanning all users (token is unique)
-    from google.cloud.firestore_v1.base_query import FieldFilter
-    users_ref = db_client.collection('users')
-    token_doc = None
-    uid = None
+    # Find token record
+    query = db.collection(VIDEOS_COLLECTION).where(
+        'photoId', '==', f'download_token:{token}'
+    ).where('status', '==', 'active').limit(1)
+    docs = list(query.stream())
 
-    for user_doc in users_ref.stream():
-        doc_ref = users_ref.document(user_doc.id).collection('photos').document(f'download_token:{token}')
-        doc = doc_ref.get()
-        if doc.exists and doc.to_dict().get('status') == 'active':
-            token_doc = doc.to_dict()
-            uid = user_doc.id
-            break
+    if not docs:
+        return _html_response(404, '<h1>This link has expired or is invalid.</h1>')
 
-    if not token_doc or not uid:
+    token_doc = docs[0].to_dict()
+    uid = token_doc.get('userId', '')
+
+    if not uid:
         return _html_response(404, '<h1>This link has expired or is invalid.</h1>')
 
     label_id = token_doc.get('labelId', '')
@@ -1545,7 +1644,7 @@ def _download_page(request):
         if datetime.now(timezone.utc) > created_dt + timedelta(hours=expires_hours):
             return _html_response(410, '<h1>This link has expired.</h1>')
 
-    # Get photos with label
+    # Get videos with label
     docs = _query_user_photos(uid)
     photos = [
         d for d in docs
@@ -1562,10 +1661,13 @@ def _download_page(request):
     photo_entries = []
     for photo in photos:
         gcs_key = photo.get('gcsKey', f"users/{uid}/{photo.get('photoId', '')}")
-        thumb_key = photo.get('thumbnailKey', gcs_key)
+        thumb_key = photo.get('thumbnailKey')
         try:
-            thumb_url = _generate_signed_url(thumb_key)
             full_url = _generate_signed_url(gcs_key)
+            # Only generate thumbnail URL if thumbnailKey exists (video frame extracted)
+            thumb_url = None
+            if thumb_key:
+                thumb_url = _generate_signed_url(thumb_key)
         except Exception:
             continue
         photo_entries.append({
@@ -1579,10 +1681,14 @@ def _download_page(request):
 
     photo_grid = ''
     for entry in photo_entries:
+        if entry['thumbUrl']:
+            thumb_html = f'<img src="{entry["thumbUrl"]}" alt="{entry["filename"]}" loading="lazy" />'
+        else:
+            thumb_html = '<div class="no-thumb"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"></polygon></svg></div>'
         photo_grid += f'''
         <div class="photo-card">
             <a href="{entry['fullUrl']}" target="_blank" download="{entry['filename']}">
-                <img src="{entry['thumbUrl']}" alt="{entry['filename']}" loading="lazy" />
+                {thumb_html}
             </a>
             <div class="photo-name">{entry['filename']}</div>
         </div>'''
@@ -1592,7 +1698,7 @@ def _download_page(request):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Download Photos</title>
+    <title>Download Videos</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
@@ -1604,6 +1710,8 @@ def _download_page(request):
         .photo-card {{ border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
         .photo-card img {{ width: 100%; aspect-ratio: 1; object-fit: cover; cursor: pointer; transition: opacity 0.2s; }}
         .photo-card img:hover {{ opacity: 0.7; }}
+        .no-thumb {{ width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: #f0f0f0; color: #999; cursor: pointer; }}
+        .no-thumb:hover {{ background: #e0e0e0; }}
         .photo-name {{ padding: 4px 6px; font-size: 0.65rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #f9f9f9; }}
         button {{ background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; padding: 14px 32px; border-radius: 12px; font-size: 1em; font-weight: 600; cursor: pointer; width: 100%; transition: all 0.3s ease; }}
         button:hover:not(:disabled) {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4); }}
@@ -1615,8 +1723,8 @@ def _download_page(request):
 </head>
 <body>
     <div class="card">
-        <h1>Download Photos</h1>
-        <p class="subtitle">{label_name} — {len(photo_entries)} photos</p>
+        <h1>Download Videos</h1>
+        <p class="subtitle">{label_name} — {len(photo_entries)} videos</p>
         <div class="actions">
             <p class="footer" style="margin-bottom: 12px;">Click a video to download individually. This link expires in {expires_hours} hours.</p>
             <button id="downloadAllBtn" onclick="downloadAll()">📥 Download ZIP — for PC</button>

@@ -57,20 +57,21 @@ You can customize the deployment by setting environment variables before running
 
 ### Deleting Resources
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/photo&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
-
-
+To keep the project (delete the Terraform resources and the state bucket):
 
 ```bash
 gcloud config set project daily-cloud-video
-gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-video-videos
-gsutil rb gs://daily-cloud-video-videos
-gcloud firestore databases delete --database="(default)" -q
+gcloud auth application-default set-quota-project daily-cloud-video
+cd terraform
+terraform init -reconfigure \
+  -backend-config="bucket=$(gcloud config get-value project)-tfstate"
+terraform destroy \
+  -var="project_id=$(gcloud config get-value project)" \
+  -var="region=asia-northeast1" \
+  && gsutil rm -r gs://$(gcloud config get-value project)-tfstate
 ```
 
-To delete the entire project (all resources shut down immediately, fully removed after 30 days):
+To delete the entire project instead (all resources shut down immediately, fully removed after 30 days):
 
 ```bash
 gcloud projects delete daily-cloud-video
@@ -78,11 +79,13 @@ gcloud projects delete daily-cloud-video
 
 ### Architecture
 
+Infrastructure is managed with Terraform (`gcp/terraform/`); `deploy.sh` is a wrapper that runs `terraform init/apply` and prints the API endpoint.
+
 ```
 User → Cloud Functions (HTTP) → Main Handler (Flask routing)
-                                    ├── Firebase Auth (auth)
+                                    ├── Identity Platform (auth)
                                     ├── Cloud Storage (video storage + thumbnails)
-                                    ├── Firestore (metadata)
+                                    ├── Firestore (metadata + username mapping)
                                     └── Storage Trigger Function (frame extraction + thumbnail generation)
 ```
 
@@ -90,6 +93,7 @@ User → Cloud Functions (HTTP) → Main Handler (Flask routing)
 - User videos isolated under `users/{firebase_uid}/` prefix
 - Direct upload to Cloud Storage via signed URLs (no function proxy)
 - Storage trigger automatically extracts thumbnails from video frames
+- Email verification is handled by Identity Platform (link-based)
 
 ### Cost Estimate
 
@@ -171,20 +175,21 @@ These are examples only — not an exhaustive list. Evaluate your own requiremen
 
 ### リソースの削除
 
-[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/daily-cloud-app/video&cloudshell_working_dir=gcp&cloudshell_tutorial=README.md&cloudshell_open_in_editor=functions/main.py)
-
-プロジェクトを再利用する場合（リソースのみを削除）：
+プロジェクトを再利用する場合（Terraform リソースと state バケットを削除）：
 
 ```bash
 gcloud config set project daily-cloud-video
-gcloud functions delete daily-cloud-video-api --region=asia-northeast1 --gen2 -q
-gcloud functions delete daily-cloud-video-storage-trigger --region=asia-northeast1 --gen2 -q
-gsutil -m rm -r gs://daily-cloud-video-videos
-gsutil rb gs://daily-cloud-video-videos
-gcloud firestore databases delete --database="(default)" -q
+gcloud auth application-default set-quota-project daily-cloud-video
+cd terraform
+terraform init -reconfigure \
+  -backend-config="bucket=$(gcloud config get-value project)-tfstate"
+terraform destroy \
+  -var="project_id=$(gcloud config get-value project)" \
+  -var="region=asia-northeast1" \
+  && gsutil rm -r gs://$(gcloud config get-value project)-tfstate
 ```
 
-プロジェクトごと削除（全リソースを一括停止 → 30 日後に完全消去）：
+プロジェクトごと削除する場合（全リソースを一括停止 → 30 日後に完全消去）：
 
 ```bash
 gcloud projects delete daily-cloud-video
@@ -192,11 +197,13 @@ gcloud projects delete daily-cloud-video
 
 ### アーキテクチャ
 
+インフラは Terraform（`gcp/terraform/`）で管理されます。`deploy.sh` は `terraform init/apply` を実行して API エンドポイントを表示するラッパーです。
+
 ```
 ユーザー → Cloud Functions (HTTP) → メインハンドラー (Flask ルーティング)
-                                        ├── Firebase Auth (認証)
+                                        ├── Identity Platform (認証)
                                         ├── Cloud Storage (動画保存 + サムネイル)
-                                        ├── Firestore (メタデータ)
+                                        ├── Firestore (メタデータ + username マッピング)
                                         └── Storage Trigger 関数 (フレーム抽出 + サムネイル生成)
 ```
 
@@ -204,6 +211,7 @@ gcloud projects delete daily-cloud-video
 - ユーザーの動画は `users/{firebase_uid}/` プレフィックスで分離
 - 署名付き URL で Cloud Storage に直接アップロード（関数を経由しない）
 - ストレージトリガーで自動的に フレーム抽出 + サムネイル生成
+- メール認証は Identity Platform（リンク方式）で実施
 
 ### コスト目安
 
