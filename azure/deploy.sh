@@ -497,28 +497,64 @@ APP_SP_ID="$SP_EXISTS"
 # (consent_required) even though the username, password and flow are all valid.
 # We create an oauth2PermissionGrant (AllPrincipals) for the delegated OpenID
 # Connect scopes against Microsoft Graph. Idempotent: skip if one exists.
+#
+# A freshly created external (CIAM) tenant reports provisioningState=Succeeded
+# before its directory "organization" object is fully initialized. Writes in
+# that window fail with 404 Directory_ObjectNotFound
+# ("Unable to read the company information from the directory"). We therefore
+# (a) wait until GET /organization returns a record, and (b) treat the grant as
+# successful whenever it EXISTS (checked before and after the POST), never
+# trusting the POST status alone — a retry that hits 409 Conflict still means
+# the grant is present. Retry window: up to ~8 minutes (48 * 10s).
 echo "  Granting admin consent to the app (OpenID Connect scopes)..."
 GRAPH_RES_SP_ID=$(graph_call GET \
     "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$GRAPH_MSGRAPH_APPID')" 2>/dev/null | json_get id)
-if [ -z "$GRAPH_RES_SP_ID" ]; then
-    echo "  WARNING: Could not resolve the Microsoft Graph service principal; skipping consent."
-else
-    EXISTING_GRANT=$(graph_call GET \
+
+# Returns the existing grant id (or empty) for our client/resource pair.
+grant_exists() {
+    graph_call GET \
         "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?\$filter=clientId eq '$APP_SP_ID' and resourceId eq '$GRAPH_RES_SP_ID'" 2>/dev/null \
         | python3 -c "import sys,json
 try:
     print((json.load(sys.stdin).get('value') or [{}])[0].get('id',''))
 except Exception:
-    print('')" 2>/dev/null || echo "")
-    if [ -n "$EXISTING_GRANT" ]; then
-        echo "  Admin consent already present."
-    else
-        GRANT_BODY="{\"clientId\":\"$APP_SP_ID\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"$GRAPH_RES_SP_ID\",\"scope\":\"openid offline_access profile\"}"
-        if graph_call POST "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" "$GRANT_BODY" >/dev/null; then
-            echo "  Admin consent granted."
-        else
-            echo "  WARNING: Failed to grant admin consent; sign-in may fail with consent_required."
+    print('')" 2>/dev/null || echo ""
+}
+
+if [ -z "$GRAPH_RES_SP_ID" ]; then
+    echo "  WARNING: Could not resolve the Microsoft Graph service principal; skipping consent."
+else
+    GRANT_BODY="{\"clientId\":\"$APP_SP_ID\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"$GRAPH_RES_SP_ID\",\"scope\":\"openid offline_access profile\"}"
+    CONSENT_OK=""
+    for _ in $(seq 1 48); do
+        # Already present (from a previous attempt or run)? Done.
+        if [ -n "$(grant_exists)" ]; then
+            CONSENT_OK="yes"
+            break
         fi
+        # The directory organization object must exist before writes succeed.
+        ORG_READY=$(graph_call GET "https://graph.microsoft.com/v1.0/organization" 2>/dev/null \
+            | python3 -c "import sys,json
+try:
+    print('yes' if (json.load(sys.stdin).get('value') or []) else 'no')
+except Exception:
+    print('no')" 2>/dev/null || echo "no")
+        if [ "$ORG_READY" != "yes" ]; then
+            sleep 10
+            continue
+        fi
+        # Attempt the grant. Don't trust the POST status: verify by existence.
+        graph_call POST "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" "$GRANT_BODY" >/dev/null 2>&1 || true
+        if [ -n "$(grant_exists)" ]; then
+            CONSENT_OK="yes"
+            break
+        fi
+        sleep 10
+    done
+    if [ -n "$CONSENT_OK" ]; then
+        echo "  Admin consent granted."
+    else
+        echo "  WARNING: Failed to grant admin consent; sign-in may fail with consent_required."
     fi
 fi
 
@@ -686,6 +722,16 @@ echo "[4/7] Creating resource group and deploying Bicep..."
 # in Step 3 may have changed the active CLI context.
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION" "${SUB_ARG[@]}" --output none
 
+# Request the app's own resource scope so native auth issues an access token
+# whose audience (aud) is THIS app registration, not Microsoft Graph. With the
+# default "openid offline_access" the token's aud is Graph
+# (00000003-0000-0000-c000-000000000000), which the backend cannot validate
+# against the tenant JWKS, so every authenticated API returns 401. Pointing the
+# scope at "<clientId>/.default" makes aud == clientId, which the backend
+# accepts (it verifies signature + issuer). clientId is only known at deploy
+# time, so it is passed in here rather than hardcoded in the Bicep template.
+ENTRA_SCOPES="${ENTRA_SCOPES:-openid offline_access ${ENTRA_CLIENT_ID}/.default}"
+
 DEPLOYMENT_OUTPUT=$(az deployment group create \
     "${SUB_ARG[@]}" \
     --resource-group "$RESOURCE_GROUP" \
@@ -695,6 +741,7 @@ DEPLOYMENT_OUTPUT=$(az deployment group create \
         entraTenantSubdomain="$ENTRA_TENANT_SUBDOMAIN" \
         entraTenantId="$ENTRA_TENANT_ID" \
         entraClientId="$ENTRA_CLIENT_ID" \
+        entraScopes="$ENTRA_SCOPES" \
     --query properties.outputs \
     --output json)
 
