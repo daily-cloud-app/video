@@ -326,6 +326,11 @@ role_id() { az ad sp show --id "$GRAPH_MSGRAPH_APPID" --query "appRoles[?value==
 ROLE_POLICY=$(role_id "Policy.ReadWrite.AuthenticationMethod")
 ROLE_FLOW=$(role_id "EventListener.ReadWrite.All")
 ROLE_APP=$(role_id "Application.ReadWrite.All")
+# Required to create the oauth2PermissionGrant (tenant-wide admin consent) for
+# the app. Application.ReadWrite.All does NOT cover writing delegated grants,
+# so without this role the POST fails with 403 Authorization_RequestDenied
+# and sign-in later fails with consent_required.
+ROLE_GRANT=$(role_id "DelegatedPermissionGrant.ReadWrite.All")
 
 # Grant admin consent by assigning the app roles to the automation SP.
 grant_role() {
@@ -338,6 +343,7 @@ grant_role() {
 grant_role "$ROLE_POLICY"
 grant_role "$ROLE_FLOW"
 grant_role "$ROLE_APP"
+grant_role "$ROLE_GRANT"
 
 # Short-lived client secret for the client-credentials grant.
 AUTO_SECRET=$(az ad app credential reset --id "$GRAPH_AUTOMATION_APPID" --append \
@@ -372,11 +378,13 @@ for _ in $(seq 1 12); do
         HAS_ROLE=$(echo "$GRAPH_TOKEN" | cut -d. -f2 | tr '_-' '/+' | \
             python3 -c "
 import sys,base64,json
+required={'Policy.ReadWrite.AuthenticationMethod','EventListener.ReadWrite.All','Application.ReadWrite.All','DelegatedPermissionGrant.ReadWrite.All'}
 s=sys.stdin.read().strip()
 s+='='*(-len(s)%4)
 try:
     d=json.loads(base64.b64decode(s))
-    print('yes' if 'Policy.ReadWrite.AuthenticationMethod' in (d.get('roles') or []) else 'no')
+    roles=set(d.get('roles') or [])
+    print('yes' if required.issubset(roles) else 'no')
 except Exception:
     print('no')" 2>/dev/null || echo "no")
         [ "$HAS_ROLE" = "yes" ] && break
