@@ -39,7 +39,7 @@ You can also deploy via the Console GUI — upload `template.yaml` and fill in p
 | AppName | `daily-cloud-video` | Prefix for all resource names |
 | RequireEmail | `true` | Require email for signup |
 | RequirePhone | `false` | Require phone number for signup |
-| PhotosBucketName | (auto-generated) | S3 bucket name for photos |
+| VideosBucketName | (auto-generated) | S3 bucket name for videos |
 | EnableShareUrl | `true` | Enable upload URL sharing feature |
 | EnableShareDownloadUrl | `true` | Enable download URL sharing feature |
 | EnableLabelSharing | `true` | Enable label sharing between users |
@@ -54,6 +54,9 @@ You can also deploy via the Console GUI — upload `template.yaml` and fill in p
 3. **Login** → Create account
 
 ### Deleting Resources
+
+> [!WARNING]
+> These steps **permanently delete all videos stored in the cloud** (the commands empty the S3 bucket, including all object versions, before deleting the stack). Back up any data you need before proceeding.
 
 ```bash
 BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-video \
@@ -143,7 +146,7 @@ GUI でデプロイする場合は、コンソールから `template.yaml` を�
 | AppName | `daily-cloud-video` | リソース名のプレフィックス |
 | RequireEmail | `true` | サインアップ時にメール必須 |
 | RequirePhone | `false` | サインアップ時に電話番号必須 |
-| PhotosBucketName | (自動生成) | 動画用 S3 バケット名 |
+| VideosBucketName | (自動生成) | 動画用 S3 バケット名 |
 | EnableShareUrl | `true` | アップロード URL　共有機能 |
 | EnableShareDownloadUrl | `true` | ダウンロード URL 共有機能 |
 | EnableLabelSharing | `true` | ラベル共有機能 |
@@ -160,6 +163,9 @@ GUI でデプロイする場合は、コンソールから `template.yaml` を�
 ### リソースの削除
 
 [![Open in CloudShell](https://img.shields.io/badge/AWS-CloudShell-orange?logo=amazonaws)](https://console.aws.amazon.com/cloudshell/home)
+
+> [!WARNING]
+> この手順を実行すると、**クラウド上の動画もすべて削除されます**（コマンドはスタック削除前に S3 バケットを全バージョンごと空にします）。必要なデータは事前にバックアップしてください。
 
 ```bash
 BUCKET=$(aws cloudformation describe-stacks --stack-name daily-cloud-video \
