@@ -226,8 +226,10 @@ Resources:
                   layer_dir = os.path.join(tmp, 'bin')
                   os.makedirs(layer_dir, exist_ok=True)
 
-                  # Download static ffmpeg binary for Linux x86_64
-                  ffmpeg_url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz'
+                  # Download static ffmpeg binary for Linux x86_64.
+                  # Pinned to a specific release (not the moving "release"
+                  # alias) so builds are reproducible. Bump deliberately.
+                  ffmpeg_url = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-7.0.2-amd64-static.tar.xz'
                   ffmpeg_tar_path = os.path.join(tmp, 'ffmpeg.tar.xz')
                   urllib.request.urlretrieve(ffmpeg_url, ffmpeg_tar_path)
 
@@ -279,13 +281,16 @@ Resources:
       LambdaKey: lambda.zip
       LayerKey: ffmpeg-layer.zip
       LayerName: !Sub '${AppName}-ffmpeg'
+      # Pinned to a specific commit SHA (not a moving branch like main) so the
+      # deployed Lambda source is reproducible. Bump this when the Lambda code
+      # under aws/lambda/ changes.
       SourceFiles:
-        - url: https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/lambda/index.py
+        - url: https://raw.githubusercontent.com/daily-cloud-app/video/3ee124fd5fdd7611a649d9771e42ec4ef05ebaa2/aws/lambda/index.py
           name: index.py
-        - url: https://raw.githubusercontent.com/daily-cloud-app/video/main/aws/lambda/s3_trigger.py
+        - url: https://raw.githubusercontent.com/daily-cloud-app/video/3ee124fd5fdd7611a649d9771e42ec4ef05ebaa2/aws/lambda/s3_trigger.py
           name: s3_trigger.py
 
-  # -- S3 (Photos) --
+  # -- S3 (Videos) --
 
   PhotosBucket:
     Type: AWS::S3::Bucket
@@ -387,9 +392,17 @@ Resources:
                   - s3:DeleteObject
                   - s3:HeadObject
                   - s3:ListBucket
+                # Reference the resolved bucket name (custom or auto-generated)
+                # by string, not by !GetAtt, to avoid a dependency cycle:
+                # LambdaExecutionRole -> Bucket -> S3TriggerPermission ->
+                # S3TriggerFunction -> LambdaExecutionRole.
                 Resource:
-                  - !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}'
-                  - !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}/*'
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}'
+                    - BucketName: !If [UseCustomBucketName, !Ref VideosBucketName, !Sub '${AppName}-videos-${AWS::AccountId}']
+                  - !Sub
+                    - 'arn:aws:s3:::${BucketName}/*'
+                    - BucketName: !If [UseCustomBucketName, !Ref VideosBucketName, !Sub '${AppName}-videos-${AWS::AccountId}']
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
@@ -471,7 +484,12 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
-      SourceArn: !Sub 'arn:aws:s3:::${AppName}-videos-${AWS::AccountId}'
+      # Resolved bucket name (custom or auto-generated). Kept as a string, not
+      # !GetAtt, because the bucket DependsOn this permission (S3 needs the
+      # invoke permission before it can configure the notification).
+      SourceArn: !Sub
+        - 'arn:aws:s3:::${BucketName}'
+        - BucketName: !If [UseCustomBucketName, !Ref VideosBucketName, !Sub '${AppName}-videos-${AWS::AccountId}']
 
   # -- API Gateway (HTTP API) --
 
