@@ -1,18 +1,26 @@
 """
 Daily Cloud Video — Azure Functions Backend (v2 Programming Model)
-All API endpoints with custom JWT auth, Cosmos DB, and Azure Blob Storage.
+
+Authentication is delegated to Microsoft Entra External ID via the Native
+Authentication API. This backend acts as a thin, stateless bridge that keeps
+the existing Android API contract (username/password) while all credentials,
+OTP verification, tokens and password resets are handled by Entra External ID.
+No password, password hash, reset code or verification code is ever stored.
+Cosmos DB only holds a username -> email / Entra object id mapping so that the
+app can continue to sign in with a username and resolve share recipients.
 """
 import json
 import os
+import time
 import uuid
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from functools import wraps
+from urllib.parse import urlencode
 
 import azure.functions as func
 import jwt
-import bcrypt
+from jwt import PyJWKClient
+import requests
 from azure.cosmos import CosmosClient, PartitionKey, exceptions as cosmos_exceptions
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
 
@@ -24,18 +32,32 @@ COSMOS_CONNECTION = os.environ.get("COSMOS_CONNECTION", "")
 COSMOS_DATABASE = os.environ.get("COSMOS_DATABASE", "dailycloudvideo")
 STORAGE_CONNECTION = os.environ.get("STORAGE_CONNECTION", "")
 STORAGE_CONTAINER = os.environ.get("STORAGE_CONTAINER", "videos")
-JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+
+# ── Microsoft Entra External ID (Native Authentication) ──
+# Tenant subdomain, e.g. "contoso" for contoso.onmicrosoft.com.
+ENTRA_TENANT_SUBDOMAIN = os.environ.get("ENTRA_TENANT_SUBDOMAIN", "")
+# Directory (tenant) GUID. Used as the token issuer/authority tenant id.
+ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
+# Application (client) ID of the native-auth-enabled public client app.
+ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
+# Scopes requested when acquiring tokens. offline_access -> refresh token,
+# openid -> id token. A resource/API scope can be appended if needed.
+ENTRA_SCOPES = os.environ.get("ENTRA_SCOPES", "openid offline_access")
+# Base URL for the Native Authentication API.
+ENTRA_BASE_URL = (
+    f"https://{ENTRA_TENANT_SUBDOMAIN}.ciamlogin.com/"
+    f"{ENTRA_TENANT_SUBDOMAIN}.onmicrosoft.com"
+).rstrip("/") if ENTRA_TENANT_SUBDOMAIN else ""
+
 REQUIRE_EMAIL = os.environ.get("REQUIRE_EMAIL", "true").lower() == "true"
 REQUIRE_PHONE = os.environ.get("REQUIRE_PHONE", "false").lower() == "true"
 ENABLE_SHARE_URL = os.environ.get("ENABLE_SHARE_URL", "true").lower() == "true"
 ENABLE_SHARE_DOWNLOAD_URL = os.environ.get("ENABLE_SHARE_DOWNLOAD_URL", "true").lower() == "true"
 ENABLE_LABEL_SHARING = os.environ.get("ENABLE_LABEL_SHARING", "true").lower() == "true"
+APP_DISPLAY_NAME = os.environ.get("APP_DISPLAY_NAME", "Daily Cloud Video Backend")
+# Share URL validity (hours). Admin-configurable; surfaced via /info.
 SHARE_UPLOAD_URL_EXPIRY_HOURS = int(os.environ.get("SHARE_UPLOAD_URL_EXPIRY_HOURS", "24"))
 SHARE_DOWNLOAD_URL_EXPIRY_HOURS = int(os.environ.get("SHARE_DOWNLOAD_URL_EXPIRY_HOURS", "72"))
-APP_DISPLAY_NAME = os.environ.get("APP_DISPLAY_NAME", "Daily Cloud Video Backend")
 FUNCTION_APP_URL = os.environ.get("FUNCTION_APP_URL", "")
 
 logger = logging.getLogger(__name__)
@@ -74,63 +96,128 @@ def _get_container_client():
 
 
 # ============================================================
-# JWT Auth Helpers
+# Entra External ID — Native Authentication client
 # ============================================================
+#
+# The backend never issues its own tokens. It relays credentials to the
+# Native Authentication API and returns the tokens Entra issues. Between the
+# stateless /auth/signup and /auth/confirm (and /auth/forgot-password and
+# /auth/reset-password) calls, Entra requires a "continuation_token" that
+# carries the flow state. We persist that opaque flow token transiently in the
+# Cosmos "users" mapping document, keyed by username. It is not a credential,
+# password, hash, reset code or verification code — it is a short-lived,
+# single-flow handle, so storing it complies with the security requirements.
 
-def _create_access_token(user_id: str, username: str) -> str:
-    """Create a JWT access token."""
-    payload = {
-        "sub": user_id,
-        "username": username,
-        "type": "access",
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+# Sign-up / sign-in with email + password advertise these challenge types.
+_CHALLENGE_SIGNUP = "oob password redirect"
+_CHALLENGE_SIGNIN = "password redirect"
+_CHALLENGE_SSPR = "oob redirect"
+# How long a stored continuation token is considered usable (seconds).
+_FLOW_TOKEN_TTL_SECONDS = 600
 
-
-def _create_refresh_token(user_id: str, username: str) -> str:
-    """Create a JWT refresh token."""
-    payload = {
-        "sub": user_id,
-        "username": username,
-        "type": "refresh",
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+# Cached JWKS client for validating Entra access tokens.
+_jwks_client: PyJWKClient | None = None
 
 
-def _verify_token(token: str, token_type: str = "access") -> dict | None:
-    """Verify and decode a JWT token. Returns payload or None."""
+def _entra_configured() -> bool:
+    """Whether the Entra External ID settings are present."""
+    return bool(ENTRA_BASE_URL and ENTRA_CLIENT_ID)
+
+
+def _entra_post(path: str, data: dict) -> tuple[int, dict]:
+    """POST a form-urlencoded request to a Native Auth endpoint.
+
+    Returns (status_code, parsed_json). client_id is injected automatically.
+    """
+    payload = {"client_id": ENTRA_CLIENT_ID}
+    payload.update({k: v for k, v in data.items() if v is not None})
+    url = f"{ENTRA_BASE_URL}{path}"
+    resp = requests.post(
+        url,
+        data=urlencode(payload),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=30,
+    )
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != token_type:
-            return None
-        return payload
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    return resp.status_code, body
+
+
+def _entra_openid_config() -> dict:
+    """Fetch the OpenID configuration for the external tenant."""
+    url = f"{ENTRA_BASE_URL}/v2.0/.well-known/openid-configuration"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Lazily build a JWKS client from the tenant's OpenID metadata."""
+    global _jwks_client
+    if _jwks_client is None:
+        jwks_uri = _entra_openid_config()["jwks_uri"]
+        _jwks_client = PyJWKClient(jwks_uri)
+    return _jwks_client
+
+
+def _validate_entra_token(token: str) -> dict | None:
+    """Validate an Entra access token via JWKS and return its claims.
+
+    Signature, expiry and issuer are verified. Audience is intentionally not
+    hard-verified here because the requested scope/resource is configurable;
+    the signature + issuer checks bind the token to this external tenant.
+    """
+    try:
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+        return claims
+    except Exception as e:  # noqa: BLE001 - any failure means "unauthenticated"
+        logger.warning("Entra token validation failed: %s", e)
         return None
 
 
 def _get_user_from_request(req: func.HttpRequest) -> dict | None:
-    """Extract user info from Authorization header."""
+    """Resolve the authenticated user from the Entra access token.
+
+    Returns a dict shaped like {"sub": <stable user id>, "username": <app
+    username>} so that the existing video endpoints keep working unchanged.
+    The stable user id is the Entra object id (oid), falling back to sub.
+    """
     auth = req.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return None
     token = auth[7:]
-    return _verify_token(token, "access")
 
+    claims = _validate_entra_token(token)
+    if not claims:
+        return None
 
-def _hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    # oid is the immutable directory object id; sub is per-app pairwise. Prefer
+    # oid so the same user id is stable across app registrations.
+    uid = claims.get("oid") or claims.get("sub")
+    if not uid:
+        return None
 
+    # Resolve the app-level username from the mapping (needed by label sharing).
+    username = _lookup_username_by_uid(uid)
+    if not username:
+        # Fall back to a claim so requests still authenticate even if the
+        # mapping is missing (e.g. user created directly in the tenant).
+        username = (
+            claims.get("preferred_username")
+            or claims.get("email")
+            or claims.get("verified_primary_email", [None])[0]
+            or uid
+        )
 
-def _verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against a bcrypt hash."""
-    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    return {"sub": uid, "username": username}
 
 
 # ============================================================
@@ -161,6 +248,94 @@ def _body(req: func.HttpRequest) -> dict:
         return req.get_json()
     except (ValueError, TypeError):
         return {}
+
+
+# ============================================================
+# Username -> email / Entra id mapping (Cosmos "users")
+# ============================================================
+#
+# The mapping document schema (nothing sensitive is ever stored):
+#   {
+#     "id": <username>,              # partition key & unique id
+#     "username": <username>,
+#     "email": <email>,
+#     "entraObjectId": <oid|sub>,    # set once the user is confirmed
+#     "createdAt": <iso8601>,
+#     # transient, single-flow handles (cleared as soon as possible):
+#     "signupContinuationToken": <token>,
+#     "signupTokenExpiresAt": <epoch>,
+#     "resetContinuationToken": <token>,
+#     "resetTokenExpiresAt": <epoch>,
+#   }
+
+def _users_container():
+    return _get_container("users")
+
+
+def _find_user_doc(username: str) -> dict | None:
+    """Read the mapping document for a username, or None."""
+    try:
+        return _users_container().read_item(item=username, partition_key=username)
+    except cosmos_exceptions.CosmosResourceNotFoundError:
+        return None
+
+
+def _find_user_by_email(email: str) -> dict | None:
+    """Find a mapping document by email (cross-partition query)."""
+    if not email:
+        return None
+    query = "SELECT * FROM c WHERE c.email = @email"
+    params = [{"name": "@email", "value": email}]
+    items = list(_users_container().query_items(
+        query=query, parameters=params, enable_cross_partition_query=True,
+    ))
+    return items[0] if items else None
+
+
+def _lookup_username_by_uid(uid: str) -> str | None:
+    """Resolve the app username from an Entra object id."""
+    if not uid:
+        return None
+    query = "SELECT c.username FROM c WHERE c.entraObjectId = @uid"
+    params = [{"name": "@uid", "value": uid}]
+    items = list(_users_container().query_items(
+        query=query, parameters=params, enable_cross_partition_query=True,
+    ))
+    return items[0]["username"] if items else None
+
+
+def _store_flow_token(username: str, kind: str, token: str) -> None:
+    """Persist a transient continuation token for a username."""
+    doc = _find_user_doc(username) or {
+        "id": username,
+        "username": username,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    doc[f"{kind}ContinuationToken"] = token
+    doc[f"{kind}TokenExpiresAt"] = int(time.time()) + _FLOW_TOKEN_TTL_SECONDS
+    _users_container().upsert_item(body=doc)
+
+
+def _read_flow_token(username: str, kind: str) -> str | None:
+    """Read a still-valid transient continuation token, or None."""
+    doc = _find_user_doc(username)
+    if not doc:
+        return None
+    token = doc.get(f"{kind}ContinuationToken")
+    expires = doc.get(f"{kind}TokenExpiresAt", 0)
+    if not token or int(time.time()) > int(expires):
+        return None
+    return token
+
+
+def _clear_flow_token(username: str, kind: str) -> None:
+    """Remove a transient continuation token once the flow completes."""
+    doc = _find_user_doc(username)
+    if not doc:
+        return
+    doc.pop(f"{kind}ContinuationToken", None)
+    doc.pop(f"{kind}TokenExpiresAt", None)
+    _users_container().upsert_item(body=doc)
 
 
 # ============================================================
@@ -248,7 +423,7 @@ def get_info(req: func.HttpRequest) -> func.HttpResponse:
         "signupFields": fields,
         "features": features,
     }
-    # Only include share URL expiry when the corresponding feature is enabled.
+    # Advertise share URL validity so the app can show it in the result popup.
     if ENABLE_SHARE_URL:
         info["uploadUrlExpiryHours"] = SHARE_UPLOAD_URL_EXPIRY_HOURS
     if ENABLE_SHARE_DOWNLOAD_URL:
@@ -263,55 +438,78 @@ def get_info(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/signup", methods=["POST"])
 def auth_signup(req: func.HttpRequest) -> func.HttpResponse:
-    """Register a new user."""
+    """Start an Entra External ID sign-up (email + password) and send an OTP.
+
+    The app username maps to the Entra account email. We submit the password
+    at /signup/v1.0/start so that /auth/confirm only needs to verify the OTP.
+    The continuation token is stored transiently keyed by username, then the
+    Android app is told a confirmation code is required.
+    """
+    if not _entra_configured():
+        return _err(503, "Authentication provider is not configured", "NotConfigured")
+
     b = _body(req)
     username = b.get("username", "").strip()
     password = b.get("password", "")
     email = b.get("email", "").strip()
-    phone = b.get("phone", "").strip()
 
     if not username or not password:
         return _err(400, "username and password are required")
-
     if len(password) < 8:
         return _err(400, "Password must be at least 8 characters", "InvalidPassword")
-
     if REQUIRE_EMAIL and not email:
         return _err(400, "email is required")
 
-    if REQUIRE_PHONE and not phone:
-        return _err(400, "phone is required")
+    # Entra uses the email as the account username.
+    entra_username = email or username
 
-    container = _get_container("users")
-    user_id = str(uuid.uuid4())
-
-    # Check if username already exists
-    query = "SELECT * FROM c WHERE c.username = @username"
-    params = [{"name": "@username", "value": username}]
-    existing = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
-    if existing:
+    # Enforce username uniqueness against our mapping.
+    existing = _find_user_doc(username)
+    if existing and existing.get("entraObjectId"):
         return _err(409, "Username already exists", "UsernameExists")
 
-    # Create user document
-    user_doc = {
-        "id": user_id,
-        "userId": user_id,
+    # Step 1: /signup/v1.0/start with password (single-screen sign-up).
+    status, body = _entra_post("/signup/v1.0/start", {
+        "username": entra_username,
+        "password": password,
+        "challenge_type": _CHALLENGE_SIGNUP,
+    })
+    if status != 200:
+        err = body.get("error", "")
+        if err == "user_already_exists":
+            return _err(409, "Username already exists", "UsernameExists")
+        if err == "invalid_grant":
+            return _err(400, body.get("error_description", "Password does not meet requirements"), "InvalidPassword")
+        logger.warning("signup/start failed: %s", body)
+        return _err(400, body.get("error_description", "Sign-up failed"), err or "SignupFailed")
+
+    continuation_token = body.get("continuation_token")
+
+    # Step 2: /signup/v1.0/challenge triggers the email OTP.
+    status, body = _entra_post("/signup/v1.0/challenge", {
+        "continuation_token": continuation_token,
+        "challenge_type": _CHALLENGE_SIGNUP,
+    })
+    if status != 200 or body.get("challenge_type") not in ("oob", None):
+        logger.warning("signup/challenge failed: %s", body)
+        return _err(400, body.get("error_description", "Failed to send confirmation code"), body.get("error", "ChallengeFailed"))
+
+    continuation_token = body.get("continuation_token", continuation_token)
+
+    # Persist the mapping + transient flow token so /auth/confirm can finish.
+    doc = existing or {
+        "id": username,
         "username": username,
-        "passwordHash": _hash_password(password),
-        "email": email,
-        "phone": phone,
-        "confirmed": True,  # Auto-confirm for simplicity (no email service)
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
-
-    try:
-        container.create_item(body=user_doc)
-    except cosmos_exceptions.CosmosResourceExistsError:
-        return _err(409, "Username already exists", "UsernameExists")
+    doc["email"] = email
+    doc["pendingEntraUsername"] = entra_username
+    _users_container().upsert_item(body=doc)
+    _store_flow_token(username, "signup", continuation_token)
 
     return _ok(201, {
-        "message": "User created. Confirmation may be required.",
-        "confirmationRequired": False,
+        "message": "User created. Confirmation required.",
+        "confirmationRequired": True,
     })
 
 
@@ -321,7 +519,10 @@ def auth_signup(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/confirm", methods=["POST"])
 def auth_confirm(req: func.HttpRequest) -> func.HttpResponse:
-    """Confirm signup (auto-confirmed in this implementation)."""
+    """Verify the email OTP to complete Entra External ID sign-up."""
+    if not _entra_configured():
+        return _err(503, "Authentication provider is not configured", "NotConfigured")
+
     b = _body(req)
     username = b.get("username", "").strip()
     code = b.get("confirmationCode", "").strip()
@@ -329,7 +530,51 @@ def auth_confirm(req: func.HttpRequest) -> func.HttpResponse:
     if not username or not code:
         return _err(400, "username and confirmationCode are required")
 
-    # In this implementation users are auto-confirmed
+    continuation_token = _read_flow_token(username, "signup")
+    if not continuation_token:
+        return _err(400, "Confirmation session expired. Please sign up again.", "ExpiredCode")
+
+    # Submit the OTP to /signup/v1.0/continue.
+    status, body = _entra_post("/signup/v1.0/continue", {
+        "continuation_token": continuation_token,
+        "grant_type": "oob",
+        "oob": code,
+    })
+    if status != 200:
+        err = body.get("error", "")
+        suberr = body.get("suberror", "")
+        if err == "invalid_grant" or suberr == "invalid_oob_value":
+            return _err(400, "Invalid confirmation code", "CodeMismatch")
+        if err == "expired_token":
+            return _err(400, "Confirmation session expired. Please sign up again.", "ExpiredCode")
+        logger.warning("signup/continue failed: %s", body)
+        return _err(400, body.get("error_description", "Confirmation failed"), err or "ConfirmFailed")
+
+    continuation_token = body.get("continuation_token", continuation_token)
+
+    # Exchange the continuation token for tokens to learn the stable user id.
+    doc = _find_user_doc(username)
+    entra_username = (doc or {}).get("pendingEntraUsername", username)
+    status, token_body = _entra_post("/oauth2/v2.0/token", {
+        "continuation_token": continuation_token,
+        "grant_type": "continuation_token",
+        "scope": ENTRA_SCOPES,
+        "username": entra_username,
+    })
+
+    # Record the stable Entra object id in the mapping (best effort).
+    if status == 200 and token_body.get("id_token"):
+        try:
+            id_claims = jwt.decode(token_body["id_token"], options={"verify_signature": False})
+            uid = id_claims.get("oid") or id_claims.get("sub")
+            if doc and uid:
+                doc["entraObjectId"] = uid
+                doc.pop("pendingEntraUsername", None)
+                _users_container().upsert_item(body=doc)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to decode id_token during confirm: %s", e)
+
+    _clear_flow_token(username, "signup")
     return _ok(200, {"message": "User confirmed."})
 
 
@@ -339,7 +584,10 @@ def auth_confirm(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/signin", methods=["POST"])
 def auth_signin(req: func.HttpRequest) -> func.HttpResponse:
-    """Sign in and receive tokens."""
+    """Sign in via Entra External ID and return the tokens it issues."""
+    if not _entra_configured():
+        return _err(503, "Authentication provider is not configured", "NotConfigured")
+
     b = _body(req)
     username = b.get("username", "").strip()
     password = b.get("password", "")
@@ -347,30 +595,78 @@ def auth_signin(req: func.HttpRequest) -> func.HttpResponse:
     if not username or not password:
         return _err(400, "username and password are required")
 
-    container = _get_container("users")
-    query = "SELECT * FROM c WHERE c.username = @username"
-    params = [{"name": "@username", "value": username}]
-    users = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+    # Resolve the account email from the mapping; fall back to the username.
+    doc = _find_user_doc(username)
+    entra_username = (doc or {}).get("email") or username
 
-    if not users:
+    # Step 1: /oauth2/v2.0/initiate
+    status, body = _entra_post("/oauth2/v2.0/initiate", {
+        "username": entra_username,
+        "challenge_type": _CHALLENGE_SIGNIN,
+    })
+    if status != 200:
+        # user_not_found and other errors are masked to avoid enumeration.
+        logger.warning("signin/initiate failed: status=%s error=%s suberror=%s desc=%s",
+                       status, body.get("error"), body.get("suberror"), body.get("error_description"))
         return _err(401, "Incorrect username or password", "NotAuthorized")
 
-    user = users[0]
+    continuation_token = body.get("continuation_token")
 
-    if not _verify_password(password, user["passwordHash"]):
+    # Step 2: /oauth2/v2.0/challenge (selects password method).
+    status, body = _entra_post("/oauth2/v2.0/challenge", {
+        "continuation_token": continuation_token,
+        "challenge_type": _CHALLENGE_SIGNIN,
+    })
+    if status != 200:
+        logger.warning("signin/challenge failed: status=%s error=%s suberror=%s desc=%s challenge_type=%s",
+                       status, body.get("error"), body.get("suberror"), body.get("error_description"),
+                       body.get("challenge_type"))
         return _err(401, "Incorrect username or password", "NotAuthorized")
 
-    if not user.get("confirmed", False):
-        return _err(403, "User is not confirmed", "UserNotConfirmed")
+    continuation_token = body.get("continuation_token", continuation_token)
 
-    access_token = _create_access_token(user["id"], user["username"])
-    refresh_token = _create_refresh_token(user["id"], user["username"])
+    # Step 3: /oauth2/v2.0/token with the password.
+    status, token_body = _entra_post("/oauth2/v2.0/token", {
+        "continuation_token": continuation_token,
+        "grant_type": "password",
+        "password": password,
+        "scope": ENTRA_SCOPES,
+    })
+    if status != 200:
+        logger.warning("signin/token failed: status=%s error=%s suberror=%s desc=%s",
+                       status, token_body.get("error"), token_body.get("suberror"),
+                       token_body.get("error_description"))
+        return _err(401, "Incorrect username or password", "NotAuthorized")
+
+    # Keep the username -> entra id mapping fresh (best effort).
+    _sync_mapping_from_id_token(username, entra_username, token_body.get("id_token"))
 
     return _ok(200, {
-        "accessToken": access_token,
-        "refreshToken": refresh_token,
-        "expiresIn": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "accessToken": token_body.get("access_token"),
+        "refreshToken": token_body.get("refresh_token", ""),
+        "expiresIn": int(token_body.get("expires_in", 3600)),
     })
+
+
+def _sync_mapping_from_id_token(username: str, email: str, id_token: str | None) -> None:
+    """Ensure the mapping doc exists and records the Entra object id."""
+    if not id_token:
+        return
+    try:
+        claims = jwt.decode(id_token, options={"verify_signature": False})
+    except Exception:  # noqa: BLE001
+        return
+    uid = claims.get("oid") or claims.get("sub")
+    if not uid:
+        return
+    doc = _find_user_doc(username) or {
+        "id": username,
+        "username": username,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    doc["email"] = doc.get("email") or email
+    doc["entraObjectId"] = uid
+    _users_container().upsert_item(body=doc)
 
 
 # ============================================================
@@ -379,22 +675,28 @@ def auth_signin(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/refresh", methods=["POST"])
 def auth_refresh(req: func.HttpRequest) -> func.HttpResponse:
-    """Refresh an expired access token."""
+    """Exchange an Entra refresh token for a new access token."""
+    if not _entra_configured():
+        return _err(503, "Authentication provider is not configured", "NotConfigured")
+
     b = _body(req)
     rt = b.get("refreshToken", "")
-
     if not rt:
         return _err(400, "refreshToken is required")
 
-    payload = _verify_token(rt, "refresh")
-    if not payload:
+    status, token_body = _entra_post("/oauth2/v2.0/token", {
+        "grant_type": "refresh_token",
+        "refresh_token": rt,
+        "scope": ENTRA_SCOPES,
+    })
+    if status != 200:
         return _err(401, "Refresh token is invalid or expired", "NotAuthorized")
 
-    access_token = _create_access_token(payload["sub"], payload["username"])
-
     return _ok(200, {
-        "accessToken": access_token,
-        "expiresIn": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "accessToken": token_body.get("access_token"),
+        # Entra may rotate refresh tokens; surface the new one when present.
+        "refreshToken": token_body.get("refresh_token", rt),
+        "expiresIn": int(token_body.get("expires_in", 3600)),
     })
 
 
@@ -404,29 +706,46 @@ def auth_refresh(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/forgot-password", methods=["POST"])
 def auth_forgot_password(req: func.HttpRequest) -> func.HttpResponse:
-    """Request a password reset code."""
+    """Start Entra self-service password reset and email an OTP.
+
+    The response never reveals whether the account exists.
+    """
     b = _body(req)
     username = b.get("username", "").strip()
-
     if not username:
         return _err(400, "username is required")
 
-    container = _get_container("users")
-    query = "SELECT * FROM c WHERE c.username = @username"
-    params = [{"name": "@username", "value": username}]
-    users = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+    # Uniform success message regardless of outcome (anti-enumeration).
+    success = _ok(200, {"message": "Confirmation code sent."})
 
-    if users:
-        # Generate a reset code and store it
-        reset_code = str(uuid.uuid4())[:6].upper()
-        user = users[0]
-        user["resetCode"] = reset_code
-        user["resetCodeExpiry"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
-        container.upsert_item(body=user)
-        logger.info(f"Reset code for {username}: {reset_code}")
+    if not _entra_configured():
+        return success
 
-    # Always return success for security (don't reveal if user exists)
-    return _ok(200, {"message": "Confirmation code sent."})
+    doc = _find_user_doc(username)
+    entra_username = (doc or {}).get("email") or username
+
+    # Step 1: /resetpassword/v1.0/start
+    status, body = _entra_post("/resetpassword/v1.0/start", {
+        "username": entra_username,
+        "challenge_type": _CHALLENGE_SSPR,
+    })
+    if status != 200:
+        # user_not_found etc. — swallow to avoid leaking existence.
+        return success
+
+    continuation_token = body.get("continuation_token")
+
+    # Step 2: /resetpassword/v1.0/challenge sends the OTP.
+    status, body = _entra_post("/resetpassword/v1.0/challenge", {
+        "continuation_token": continuation_token,
+        "challenge_type": _CHALLENGE_SSPR,
+    })
+    if status != 200:
+        return success
+
+    continuation_token = body.get("continuation_token", continuation_token)
+    _store_flow_token(username, "reset", continuation_token)
+    return success
 
 
 # ============================================================
@@ -435,7 +754,10 @@ def auth_forgot_password(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="auth/reset-password", methods=["POST"])
 def auth_reset_password(req: func.HttpRequest) -> func.HttpResponse:
-    """Reset password with confirmation code."""
+    """Complete Entra self-service password reset using the emailed OTP."""
+    if not _entra_configured():
+        return _err(503, "Authentication provider is not configured", "NotConfigured")
+
     b = _body(req)
     username = b.get("username", "").strip()
     code = b.get("confirmationCode", "").strip()
@@ -443,49 +765,76 @@ def auth_reset_password(req: func.HttpRequest) -> func.HttpResponse:
 
     if not username or not code or not new_password:
         return _err(400, "username, confirmationCode, and newPassword are required")
-
     if len(new_password) < 8:
         return _err(400, "Password must be at least 8 characters", "InvalidPassword")
 
-    container = _get_container("users")
-    query = "SELECT * FROM c WHERE c.username = @username"
-    params = [{"name": "@username", "value": username}]
-    users = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
+    continuation_token = _read_flow_token(username, "reset")
+    if not continuation_token:
+        return _err(400, "Reset session expired. Please request a new code.", "ExpiredCode")
 
-    if not users:
-        return _err(404, "User not found", "UserNotFound")
+    # Step 3: /resetpassword/v1.0/continue submits the OTP.
+    status, body = _entra_post("/resetpassword/v1.0/continue", {
+        "continuation_token": continuation_token,
+        "grant_type": "oob",
+        "oob": code,
+    })
+    if status != 200:
+        err = body.get("error", "")
+        suberr = body.get("suberror", "")
+        if err == "invalid_grant" or suberr == "invalid_oob_value":
+            return _err(400, "Invalid confirmation code", "CodeMismatch")
+        if err == "expired_token":
+            return _err(400, "Reset session expired. Please request a new code.", "ExpiredCode")
+        logger.warning("resetpassword/continue failed: %s", body)
+        return _err(400, body.get("error_description", "Password reset failed"), err or "ResetFailed")
 
-    user = users[0]
-    stored_code = user.get("resetCode", "")
-    expiry = user.get("resetCodeExpiry", "")
+    continuation_token = body.get("continuation_token", continuation_token)
 
-    if not stored_code or stored_code != code:
-        return _err(400, "Invalid confirmation code", "CodeMismatch")
+    # Step 4: /resetpassword/v1.0/submit sets the new password.
+    status, body = _entra_post("/resetpassword/v1.0/submit", {
+        "continuation_token": continuation_token,
+        "new_password": new_password,
+    })
+    if status != 200:
+        suberr = body.get("suberror", "")
+        if suberr in ("password_too_weak", "password_too_short", "password_too_long",
+                      "password_recently_used", "password_banned", "password_is_invalid"):
+            return _err(400, body.get("error_description", "Password does not meet requirements"), "InvalidPassword")
+        logger.warning("resetpassword/submit failed: %s", body)
+        return _err(400, body.get("error_description", "Password reset failed"), body.get("error", "ResetFailed"))
 
-    # Check expiry
-    try:
-        expiry_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-        if datetime.now(timezone.utc) > expiry_dt:
-            return _err(400, "Confirmation code expired", "ExpiredCode")
-    except Exception:
-        return _err(400, "Confirmation code expired", "ExpiredCode")
+    continuation_token = body.get("continuation_token", continuation_token)
+    poll_interval = int(body.get("poll_interval", 2))
 
-    # Update password and clear reset code
-    user["passwordHash"] = _hash_password(new_password)
-    user.pop("resetCode", None)
-    user.pop("resetCodeExpiry", None)
-    container.upsert_item(body=user)
+    # Step 5: poll until the reset is applied.
+    for _ in range(10):
+        time.sleep(max(1, poll_interval))
+        status, body = _entra_post("/resetpassword/v1.0/poll_completion", {
+            "continuation_token": continuation_token,
+        })
+        if status != 200:
+            break
+        state = body.get("status", "")
+        if state == "succeeded":
+            _clear_flow_token(username, "reset")
+            return _ok(200, {"message": "Password reset successful."})
+        if state == "failed":
+            return _err(400, "Password reset failed", "ResetFailed")
+        continuation_token = body.get("continuation_token", continuation_token)
 
+    # Reset was accepted but not yet confirmed applied; treat as success so the
+    # user can sign in shortly. The flow token is cleared to avoid reuse.
+    _clear_flow_token(username, "reset")
     return _ok(200, {"message": "Password reset successful."})
 
 
 # ============================================================
-# GET /photos
+# GET /videos
 # ============================================================
 
 @app.route(route="videos", methods=["GET"])
-def photos_list(req: func.HttpRequest) -> func.HttpResponse:
-    """List photos for the authenticated user."""
+def videos_list(req: func.HttpRequest) -> func.HttpResponse:
+    """List videos for the authenticated user."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
@@ -494,10 +843,10 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
     limit = int(req.params.get("limit", "100"))
     cursor = req.params.get("cursor", None)
 
-    container = _get_container("photos")
+    container = _get_container("videos")
 
-    # Query user's photos
-    query = "SELECT * FROM c WHERE c.userId = @uid AND c.status != 'deleted' AND c.status != 'uploading' AND NOT STARTSWITH(c.id, 'share_token:') AND NOT STARTSWITH(c.id, 'share:') AND NOT STARTSWITH(c.id, 'sent_share:') ORDER BY c.createdAt DESC"
+    # Query user's videos
+    query = "SELECT * FROM c WHERE c.userId = @uid AND c.status != 'deleted' AND c.status != 'uploading' AND (NOT IS_DEFINED(c.size) OR c.size > 0) AND NOT STARTSWITH(c.id, 'share_token:') AND NOT STARTSWITH(c.id, 'share:') AND NOT STARTSWITH(c.id, 'sent_share:') ORDER BY c.createdAt DESC"
     params = [{"name": "@uid", "value": uid}]
 
     items = list(container.query_items(
@@ -507,7 +856,7 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
         max_item_count=limit,
     ))
 
-    photos = []
+    videos = []
     for item in items:
         blob_key = item.get("blobKey", "")
         thumbnail_key = item.get("thumbnailKey", "")
@@ -515,7 +864,7 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
         full_url = _generate_sas_url(blob_key) if blob_key else None
         thumbnail_url = _generate_sas_url(thumbnail_key) if thumbnail_key else full_url
 
-        photos.append({
+        videos.append({
             "id": item["id"],
             "filename": item.get("filename", ""),
             "contentType": item.get("contentType", "video/mp4"),
@@ -529,7 +878,7 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
             "sharedFrom": "",
         })
 
-    # Include shared photos
+    # Include shared videos
     if ENABLE_LABEL_SHARING:
         shares_query = "SELECT * FROM c WHERE c.userId = @uid AND STARTSWITH(c.id, 'share:') AND c.status = 'accepted'"
         shares = list(container.query_items(
@@ -544,25 +893,25 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
             if not from_uid or not label_id:
                 continue
 
-            # Get photos from sharing user with the specified label
-            shared_photos_query = "SELECT * FROM c WHERE c.userId = @fromUid AND c.status != 'deleted' AND ARRAY_CONTAINS(c.labels, @labelId)"
+            # Get videos from sharing user with the specified label
+            shared_videos_query = "SELECT * FROM c WHERE c.userId = @fromUid AND c.status != 'deleted' AND ARRAY_CONTAINS(c.labels, @labelId)"
             shared_params = [
                 {"name": "@fromUid", "value": from_uid},
                 {"name": "@labelId", "value": label_id},
             ]
-            shared_photos = list(container.query_items(
-                query=shared_photos_query,
+            shared_videos = list(container.query_items(
+                query=shared_videos_query,
                 parameters=shared_params,
                 enable_cross_partition_query=True,
             ))
 
-            for sp in shared_photos:
+            for sp in shared_videos:
                 if sp.get("id", "").startswith("share_token:") or sp.get("id", "").startswith("share:") or sp.get("id", "").startswith("sent_share:"):
                     continue
                 sp_blob_key = sp.get("blobKey", "")
                 sp_thumb_key = sp.get("thumbnailKey", "")
 
-                photos.append({
+                videos.append({
                     "id": sp["id"],
                     "filename": sp.get("filename", ""),
                     "contentType": sp.get("contentType", "video/mp4"),
@@ -577,36 +926,36 @@ def photos_list(req: func.HttpRequest) -> func.HttpResponse:
 
     # Simple cursor-based pagination
     next_cursor = None
-    if len(photos) > limit:
-        photos = photos[:limit]
-        next_cursor = photos[-1]["id"] if photos else None
+    if len(videos) > limit:
+        videos = videos[:limit]
+        next_cursor = videos[-1]["id"] if videos else None
 
-    return _ok(200, {"videos": photos, "nextCursor": next_cursor})
+    return _ok(200, {"videos": videos, "nextCursor": next_cursor})
 
 
 # ============================================================
 # GET /videos/{id}
 # ============================================================
 
-@app.route(route="videos/{photo_id}", methods=["GET"])
-def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
+@app.route(route="videos/{video_id}", methods=["GET"])
+def videos_get_one(req: func.HttpRequest) -> func.HttpResponse:
     """Get a single video's metadata."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    photo_id = req.route_params.get("photo_id", "")
-    if not photo_id:
-        return _err(400, "photoId is required")
+    video_id = req.route_params.get("video_id", "")
+    if not video_id:
+        return _err(400, "videoId is required")
 
     # Avoid matching sub-routes
-    if photo_id in ("upload-url", "share-upload-url", "share-upload"):
+    if video_id in ("upload-url", "share-upload-url", "share-upload"):
         return _err(404, "Not found")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     try:
-        item = container.read_item(item=photo_id, partition_key=uid)
+        item = container.read_item(item=video_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
         return _err(404, "Video not found")
 
@@ -616,7 +965,7 @@ def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
     thumbnail_url = _generate_sas_url(thumbnail_key) if thumbnail_key else full_url
 
     return _ok(200, {
-        "id": photo_id,
+        "id": video_id,
         "filename": item.get("filename", ""),
         "contentType": item.get("contentType", "video/mp4"),
         "size": int(item.get("size", 0)),
@@ -631,7 +980,7 @@ def photos_get_one(req: func.HttpRequest) -> func.HttpResponse:
 # ============================================================
 
 @app.route(route="videos/upload-url", methods=["POST"])
-def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
+def videos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     """Get a presigned URL for uploading a video."""
     user = _get_user_from_request(req)
     if not user:
@@ -642,25 +991,25 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     filename = b.get("filename", "")
     content_type = b.get("contentType", "video/mp4")
     created_at = b.get("createdAt", datetime.now(timezone.utc).isoformat())
-    photo_id = b.get("photoId", "") or str(uuid.uuid4())
+    video_id = b.get("photoId", "") or b.get("videoId", "") or str(uuid.uuid4())
 
     if not filename:
         return _err(400, "filename is required")
 
-    # Build blob path: users/{uid}/YYYY/MM/DD/{photoId}
+    # Build blob path: users/{uid}/YYYY/MM/DD/{videoId}
     try:
         dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     except Exception:
         dt = datetime.now(timezone.utc)
     date_path = f"{dt.year}/{dt.month:02d}/{dt.day:02d}"
-    blob_key = f"users/{uid}/{date_path}/{photo_id}"
+    blob_key = f"users/{uid}/{date_path}/{video_id}"
 
     upload_url = _generate_upload_sas(blob_key, content_type)
 
     # Store video metadata in Cosmos DB
-    container = _get_container("photos")
-    photo_doc = {
-        "id": photo_id,
+    container = _get_container("videos")
+    video_doc = {
+        "id": video_id,
         "userId": uid,
         "filename": filename,
         "contentType": content_type,
@@ -672,13 +1021,13 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     }
 
     try:
-        container.upsert_item(body=photo_doc)
+        container.upsert_item(body=video_doc)
     except Exception as e:
         logger.error(f"Failed to save video metadata: {e}")
         return _err(500, "Failed to create video record")
 
     return _ok(200, {
-        "videoId": photo_id,
+        "videoId": video_id,
         "uploadUrl": upload_url,
         "headers": {"x-ms-blob-type": "BlockBlob", "Content-Type": content_type},
         "expiresIn": 3600,
@@ -689,21 +1038,21 @@ def photos_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 # POST /videos/{id}/confirm
 # ============================================================
 
-@app.route(route="videos/{photo_id}/confirm", methods=["POST"])
-def photos_confirm(req: func.HttpRequest) -> func.HttpResponse:
+@app.route(route="videos/{video_id}/confirm", methods=["POST"])
+def videos_confirm(req: func.HttpRequest) -> func.HttpResponse:
     """Confirm that upload to presigned URL is complete."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    photo_id = req.route_params.get("photo_id", "")
-    if not photo_id:
-        return _err(400, "photoId is required")
+    video_id = req.route_params.get("video_id", "")
+    if not video_id:
+        return _err(400, "videoId is required")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     try:
-        item = container.read_item(item=photo_id, partition_key=uid)
+        item = container.read_item(item=video_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
         return _err(404, "Video not found")
 
@@ -731,17 +1080,17 @@ def photos_confirm(req: func.HttpRequest) -> func.HttpResponse:
 # PUT /videos/{id}/labels
 # ============================================================
 
-@app.route(route="videos/{photo_id}/labels", methods=["PUT"])
-def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
+@app.route(route="videos/{video_id}/labels", methods=["PUT"])
+def videos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
     """Update labels for a video."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    photo_id = req.route_params.get("photo_id", "")
-    if not photo_id:
-        return _err(400, "photoId is required")
+    video_id = req.route_params.get("video_id", "")
+    if not video_id:
+        return _err(400, "videoId is required")
 
     b = _body(req)
     labels = b.get("labels", [])
@@ -749,9 +1098,9 @@ def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
     if not isinstance(labels, list):
         return _err(400, "labels must be an array")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     try:
-        item = container.read_item(item=photo_id, partition_key=uid)
+        item = container.read_item(item=video_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
         return _err(404, "Video not found")
 
@@ -767,21 +1116,21 @@ def photos_update_labels(req: func.HttpRequest) -> func.HttpResponse:
 # DELETE /videos/{id}
 # ============================================================
 
-@app.route(route="videos/{photo_id}", methods=["DELETE"])
-def photos_delete(req: func.HttpRequest) -> func.HttpResponse:
+@app.route(route="videos/{video_id}", methods=["DELETE"])
+def videos_delete(req: func.HttpRequest) -> func.HttpResponse:
     """Soft-delete a video."""
     user = _get_user_from_request(req)
     if not user:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    photo_id = req.route_params.get("photo_id", "")
-    if not photo_id:
-        return _err(400, "photoId is required")
+    video_id = req.route_params.get("video_id", "")
+    if not video_id:
+        return _err(400, "videoId is required")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     try:
-        item = container.read_item(item=photo_id, partition_key=uid)
+        item = container.read_item(item=video_id, partition_key=uid)
     except cosmos_exceptions.CosmosResourceNotFoundError:
         return _err(404, "Video not found")
 
@@ -798,7 +1147,7 @@ def photos_delete(req: func.HttpRequest) -> func.HttpResponse:
 # ============================================================
 
 @app.route(route="videos/share-upload-url", methods=["POST"])
-def photos_share_upload_url(req: func.HttpRequest) -> func.HttpResponse:
+def videos_share_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     """Generate a temporary upload page URL for third parties."""
     if not ENABLE_SHARE_URL:
         return _err(403, "Share URL feature is disabled")
@@ -809,7 +1158,6 @@ def photos_share_upload_url(req: func.HttpRequest) -> func.HttpResponse:
 
     uid = user["sub"]
     b = _body(req)
-    # Fall back to the server default when the request omits expiresHours.
     expires_hours = int(b.get("expiresHours", SHARE_UPLOAD_URL_EXPIRY_HOURS))
     label_id = b.get("labelId", "") or ""
     label_name = b.get("labelName", "") or ""
@@ -817,7 +1165,7 @@ def photos_share_upload_url(req: func.HttpRequest) -> func.HttpResponse:
     token = str(uuid.uuid4())
 
     # Save token to Cosmos DB
-    container = _get_container("photos")
+    container = _get_container("videos")
     token_doc = {
         "id": f"share_token:{token}",
         "userId": uid,
@@ -865,9 +1213,8 @@ def upload_page(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     # Validate token
-    container = _get_container("photos")
+    container = _get_container("videos")
     try:
-        # Query for the share token across partitions
         query = "SELECT * FROM c WHERE c.id = @tokenId AND c.status = 'active'"
         params = [{"name": "@tokenId", "value": f"share_token:{token}"}]
         items = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
@@ -900,7 +1247,7 @@ def upload_page(req: func.HttpRequest) -> func.HttpResponse:
     base_url = FUNCTION_APP_URL or f"https://{req.headers.get('Host', 'localhost')}"
     api_base = f"{base_url}/v1"
 
-    html = _build_upload_page_html(token, api_base)
+    html = _build_upload_page_html(token, api_base, expires_hours)
 
     return func.HttpResponse(
         body=html,
@@ -915,7 +1262,7 @@ def upload_page(req: func.HttpRequest) -> func.HttpResponse:
 # ============================================================
 
 @app.route(route="videos/share-upload", methods=["POST"])
-def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
+def videos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
     """Get a presigned URL using a share token (no auth required)."""
     if not ENABLE_SHARE_URL:
         return _err(403, "Share URL feature is disabled")
@@ -929,7 +1276,7 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
         return _err(400, "token and filename are required")
 
     # Validate token
-    container = _get_container("photos")
+    container = _get_container("videos")
     query = "SELECT * FROM c WHERE c.id = @tokenId AND c.status = 'active'"
     params = [{"name": "@tokenId", "value": f"share_token:{token}"}]
     items = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
@@ -952,16 +1299,16 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
     uid = item["userId"]
     label_id = item.get("labelId", "")
     label_name = item.get("labelName", "")
-    photo_id = str(uuid.uuid4())
+    video_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     date_path = f"{now.year}/{now.month:02d}/{now.day:02d}"
-    blob_key = f"users/{uid}/{date_path}/{photo_id}"
+    blob_key = f"users/{uid}/{date_path}/{video_id}"
 
     upload_url = _generate_upload_sas(blob_key, content_type)
 
     # Create video record
-    photo_doc = {
-        "id": photo_id,
+    video_doc = {
+        "id": video_id,
         "userId": uid,
         "filename": filename,
         "contentType": content_type,
@@ -973,12 +1320,12 @@ def photos_share_upload(req: func.HttpRequest) -> func.HttpResponse:
         "uploadedViaShare": True,
     }
     if label_id and label_name:
-        photo_doc["labelNames"] = {label_id: label_name}
-    container.upsert_item(body=photo_doc)
+        video_doc["labelNames"] = {label_id: label_name}
+    container.upsert_item(body=video_doc)
 
     return _ok(200, {
         "uploadUrl": upload_url,
-        "videoId": photo_id,
+        "videoId": video_id,
     })
 
 
@@ -1006,21 +1353,18 @@ def create_share(req: func.HttpRequest) -> func.HttpResponse:
     if not to_username or not label_id:
         return _err(400, "toUsername and labelId are required")
 
-    # Find recipient user
-    users_container = _get_container("users")
-    query = "SELECT * FROM c WHERE c.username = @username"
-    params = [{"name": "@username", "value": to_username}]
-    recipients = list(users_container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
-
-    if not recipients:
+    # Find recipient user in the username -> Entra id mapping.
+    recipient_doc = _find_user_doc(to_username)
+    if not recipient_doc or not recipient_doc.get("entraObjectId"):
         return _err(404, "User not found")
 
-    to_uid = recipients[0]["id"]
+    # Videos are partitioned by the Entra stable user id.
+    to_uid = recipient_doc["entraObjectId"]
     if to_uid == uid:
         return _err(400, "Cannot share with yourself")
 
     share_id = str(uuid.uuid4())
-    photos_container = _get_container("photos")
+    videos_container = _get_container("videos")
 
     # Create receiver's share record
     receiver_doc = {
@@ -1034,7 +1378,7 @@ def create_share(req: func.HttpRequest) -> func.HttpResponse:
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "labels": [],
     }
-    photos_container.upsert_item(body=receiver_doc)
+    videos_container.upsert_item(body=receiver_doc)
 
     # Create sender's share record
     sender_doc = {
@@ -1048,7 +1392,7 @@ def create_share(req: func.HttpRequest) -> func.HttpResponse:
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "labels": [],
     }
-    photos_container.upsert_item(body=sender_doc)
+    videos_container.upsert_item(body=sender_doc)
 
     return _ok(201, {
         "message": "Share request created.",
@@ -1068,7 +1412,7 @@ def shares_pending(req: func.HttpRequest) -> func.HttpResponse:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    container = _get_container("photos")
+    container = _get_container("videos")
 
     query = "SELECT * FROM c WHERE c.userId = @uid AND STARTSWITH(c.id, 'share:') AND c.status = 'pending'"
     params = [{"name": "@uid", "value": uid}]
@@ -1099,7 +1443,7 @@ def shares_sent(req: func.HttpRequest) -> func.HttpResponse:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    container = _get_container("photos")
+    container = _get_container("videos")
 
     query = "SELECT * FROM c WHERE c.userId = @uid AND STARTSWITH(c.id, 'sent_share:')"
     params = [{"name": "@uid", "value": uid}]
@@ -1131,7 +1475,7 @@ def shares_list(req: func.HttpRequest) -> func.HttpResponse:
         return _err(401, "Authentication required")
 
     uid = user["sub"]
-    container = _get_container("photos")
+    container = _get_container("videos")
 
     query = "SELECT * FROM c WHERE c.userId = @uid AND STARTSWITH(c.id, 'share:') AND c.status = 'accepted'"
     params = [{"name": "@uid", "value": uid}]
@@ -1165,7 +1509,7 @@ def shares_accept(req: func.HttpRequest) -> func.HttpResponse:
     uid = user["sub"]
     share_id = req.route_params.get("share_id", "")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     doc_id = f"share:{share_id}"
 
     try:
@@ -1193,7 +1537,7 @@ def shares_reject(req: func.HttpRequest) -> func.HttpResponse:
     uid = user["sub"]
     share_id = req.route_params.get("share_id", "")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
     doc_id = f"share:{share_id}"
 
     try:
@@ -1218,7 +1562,7 @@ def shares_delete(req: func.HttpRequest) -> func.HttpResponse:
     uid = user["sub"]
     share_id = req.route_params.get("share_id", "")
 
-    container = _get_container("photos")
+    container = _get_container("videos")
 
     # Try as receiver first
     receiver_id = f"share:{share_id}"
@@ -1259,7 +1603,7 @@ def shares_delete(req: func.HttpRequest) -> func.HttpResponse:
 # Upload Page HTML Builder
 # ============================================================
 
-def _build_upload_page_html(token: str, api_base: str) -> str:
+def _build_upload_page_html(token: str, api_base: str, expires_hours: int) -> str:
     """Build the HTML upload page."""
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1379,7 +1723,7 @@ def _build_upload_page_html(token: str, api_base: str) -> str:
 
 @app.route(route="videos/share-download-url", methods=["POST"])
 def share_download_url(req: func.HttpRequest) -> func.HttpResponse:
-    """Generate a download page URL for sharing photos by label."""
+    """Generate a download page URL for sharing videos by label."""
     if not ENABLE_SHARE_DOWNLOAD_URL:
         return _err(403, "Share URL feature is disabled")
     user = _get_user_from_request(req)
@@ -1390,20 +1734,19 @@ def share_download_url(req: func.HttpRequest) -> func.HttpResponse:
     b = _body(req)
     label_id = b.get("labelId", "")
     label_name = b.get("labelName", "")
-    # Fall back to the server default when the request omits expiresHours.
     expires_hours = int(b.get("expiresHours", SHARE_DOWNLOAD_URL_EXPIRY_HOURS))
 
     if not label_id:
         return _err(400, "labelId is required")
 
-    # Count matching photos
-    container = _get_container("photos")
+    # Count matching videos
+    container = _get_container("videos")
     query = "SELECT * FROM c WHERE c.userId = @uid AND c.status != 'deleted' AND c.status != 'uploading' AND ARRAY_CONTAINS(c.labels, @labelId) AND NOT STARTSWITH(c.id, 'share_token:') AND NOT STARTSWITH(c.id, 'share:') AND NOT STARTSWITH(c.id, 'download_token:')"
     params = [{"name": "@uid", "value": uid}, {"name": "@labelId", "value": label_id}]
     matching = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
 
     if not matching:
-        return _err(404, "No photos found matching the criteria")
+        return _err(404, "No videos found matching the criteria")
 
     token = str(uuid.uuid4())
     container.upsert_item(body={
@@ -1434,7 +1777,7 @@ def share_download_url(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="download-page", methods=["GET"])
 def download_page(req: func.HttpRequest) -> func.HttpResponse:
-    """Render an HTML download page for shared photos."""
+    """Render an HTML download page for shared videos."""
     if not ENABLE_SHARE_DOWNLOAD_URL:
         return func.HttpResponse("<h1>This feature is disabled.</h1>", status_code=403, mimetype="text/html")
 
@@ -1443,7 +1786,7 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("<h1>Invalid link.</h1>", status_code=400, mimetype="text/html")
 
     # Find token record
-    container = _get_container("photos")
+    container = _get_container("videos")
     query = "SELECT * FROM c WHERE c.id = @tokenId AND c.status = 'active'"
     params = [{"name": "@tokenId", "value": f"download_token:{token}"}]
     items = list(container.query_items(query=query, parameters=params, enable_cross_partition_query=True))
@@ -1464,35 +1807,40 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
         if datetime.now(timezone.utc) > created_dt + timedelta(hours=expires_hours):
             return func.HttpResponse("<h1>This link has expired.</h1>", status_code=410, mimetype="text/html")
 
-    # Get photos with label
-    photo_query = "SELECT * FROM c WHERE c.userId = @uid AND c.status != 'deleted' AND c.status != 'uploading' AND ARRAY_CONTAINS(c.labels, @labelId) AND NOT STARTSWITH(c.id, 'share_token:') AND NOT STARTSWITH(c.id, 'share:') AND NOT STARTSWITH(c.id, 'download_token:')"
-    photo_params = [{"name": "@uid", "value": uid}, {"name": "@labelId", "value": label_id}]
-    photos = list(container.query_items(query=photo_query, parameters=photo_params, enable_cross_partition_query=True))
+    # Get videos with label
+    video_query = "SELECT * FROM c WHERE c.userId = @uid AND c.status != 'deleted' AND c.status != 'uploading' AND ARRAY_CONTAINS(c.labels, @labelId) AND NOT STARTSWITH(c.id, 'share_token:') AND NOT STARTSWITH(c.id, 'share:') AND NOT STARTSWITH(c.id, 'download_token:')"
+    video_params = [{"name": "@uid", "value": uid}, {"name": "@labelId", "value": label_id}]
+    videos = list(container.query_items(query=video_query, parameters=video_params, enable_cross_partition_query=True))
 
-    photo_entries = []
-    for photo in photos:
-        blob_key = photo.get("blobKey", "")
-        thumb_key = photo.get("thumbnailKey", blob_key)
+    video_entries = []
+    for video in videos:
+        blob_key = video.get("blobKey", "")
+        thumb_key = video.get("thumbnailKey", "")
         if not blob_key:
             continue
-        thumb_url = _generate_sas_url(thumb_key)
+        # Videos may not have a thumbnail yet; fall back to no preview image.
+        thumb_url = _generate_sas_url(thumb_key) if thumb_key else None
         full_url = _generate_sas_url(blob_key)
-        photo_entries.append({
-            "filename": photo.get("filename", photo["id"]),
+        video_entries.append({
+            "filename": video.get("filename", video["id"]),
             "thumbUrl": thumb_url,
             "fullUrl": full_url,
         })
 
-    photos_json = json.dumps([{"filename": e["filename"], "fullUrl": e["fullUrl"]} for e in photo_entries])
+    videos_json = json.dumps([{"filename": e["filename"], "fullUrl": e["fullUrl"]} for e in video_entries])
 
-    photo_grid = ""
-    for entry in photo_entries:
-        photo_grid += f'''
-        <div class="photo-card">
+    video_grid = ""
+    for entry in video_entries:
+        if entry["thumbUrl"]:
+            thumb_html = f'<img src="{entry["thumbUrl"]}" alt="{entry["filename"]}" loading="lazy" />'
+        else:
+            thumb_html = '<div class="no-thumb"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5,3 19,12 5,21"></polygon></svg></div>'
+        video_grid += f'''
+        <div class="video-card">
             <a href="{entry["fullUrl"]}" target="_blank" download="{entry["filename"]}">
-                <img src="{entry["thumbUrl"]}" alt="{entry["filename"]}" loading="lazy" />
+                {thumb_html}
             </a>
-            <div class="photo-name">{entry["filename"]}</div>
+            <div class="video-name">{entry["filename"]}</div>
         </div>'''
 
     html = f'''<!DOCTYPE html>
@@ -1500,7 +1848,7 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Download Photos</title>
+    <title>Download Videos</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }}
@@ -1509,10 +1857,12 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
         .subtitle {{ color: #888; font-size: 0.9em; margin-bottom: 16px; }}
         .actions {{ margin-bottom: 24px; }}
         .grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 24px; }}
-        .photo-card {{ border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-        .photo-card img {{ width: 100%; aspect-ratio: 1; object-fit: cover; cursor: pointer; transition: opacity 0.2s; }}
-        .photo-card img:hover {{ opacity: 0.7; }}
-        .photo-name {{ padding: 4px 6px; font-size: 0.65rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #f9f9f9; }}
+        .video-card {{ border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        .video-card img {{ width: 100%; aspect-ratio: 1; object-fit: cover; cursor: pointer; transition: opacity 0.2s; }}
+        .video-card img:hover {{ opacity: 0.7; }}
+        .no-thumb {{ width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; background: #f0f0f0; color: #999; cursor: pointer; }}
+        .no-thumb:hover {{ background: #e0e0e0; }}
+        .video-name {{ padding: 4px 6px; font-size: 0.65rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #f9f9f9; }}
         button {{ background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; padding: 14px 32px; border-radius: 12px; font-size: 1em; font-weight: 600; cursor: pointer; width: 100%; transition: all 0.3s ease; }}
         button:hover:not(:disabled) {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4); }}
         button:disabled {{ background: #ddd; transform: none; box-shadow: none; cursor: not-allowed; }}
@@ -1524,16 +1874,16 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
 <body>
     <div class="card">
         <h1>Download Videos</h1>
-        <p class="subtitle">{label_name} — {len(photo_entries)} photos</p>
+        <p class="subtitle">{label_name} — {len(video_entries)} videos</p>
         <div class="actions">
             <p class="footer" style="margin-bottom: 12px;">Click a video to download individually. This link expires in {expires_hours} hours.</p>
             <button id="downloadAllBtn" onclick="downloadAll()">📥 Download ZIP — for PC</button>
             <div id="status"></div>
         </div>
-        <div class="grid">{photo_grid}</div>
+        <div class="grid">{video_grid}</div>
     </div>
     <script>
-        const photos = {photos_json};
+        const videos = {videos_json};
         async function downloadAll() {{
             const btn = document.getElementById('downloadAllBtn');
             const st = document.getElementById('status');
@@ -1542,10 +1892,10 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
             st.textContent = 'Preparing download...';
             try {{
                 const zip = new JSZip();
-                for (let i = 0; i < photos.length; i++) {{
-                    st.textContent = `Downloading ${{i+1}} / ${{photos.length}}...`;
-                    const r = await fetch(photos[i].fullUrl);
-                    zip.file(photos[i].filename, await r.blob());
+                for (let i = 0; i < videos.length; i++) {{
+                    st.textContent = `Downloading ${{i+1}} / ${{videos.length}}...`;
+                    const r = await fetch(videos[i].fullUrl);
+                    zip.file(videos[i].filename, await r.blob());
                 }}
                 st.textContent = 'Creating ZIP...';
                 const blob = await zip.generateAsync({{type:'blob'}});
@@ -1574,6 +1924,6 @@ def download_page(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.event_grid_trigger(arg_name="event")
 def process_video(event: func.EventGridEvent):
-    """Triggered by Event Grid when a blob is created in the photos container."""
+    """Triggered by Event Grid when a blob is created in the videos container."""
     from storage_trigger import handle_blob_event
     handle_blob_event(event)

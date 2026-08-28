@@ -32,8 +32,8 @@ You are not limited to these providers — any server that implements the [API s
 | Logic | Lambda | Cloud Functions | Azure Functions |
 | Database | DynamoDB | Firestore | Cosmos DB |
 | File Storage | S3 | Cloud Storage | Blob Storage |
-| Auth | Cognito | Firebase Auth | Custom JWT |
-| IaC | CloudFormation | Terraform | ARM Template |
+| Auth | Cognito | Firebase Auth | Entra External ID |
+| IaC | CloudFormation | Terraform | Bicep |
 | Thumbnail Trigger | S3 Event | Eventarc | Blob Trigger |
 
 ---
@@ -65,6 +65,6 @@ Daily Cloud Video アプリ用のバックエンドサンプル実装です。
 | ロジック | Lambda | Cloud Functions | Azure Functions |
 | データベース | DynamoDB | Firestore | Cosmos DB |
 | ファイルストレージ | S3 | Cloud Storage | Blob Storage |
-| 認証 | Cognito | Firebase Auth | Custom JWT |
-| IaC | CloudFormation | Terraform | ARM Template |
+| 認証 | Cognito | Firebase Auth | Entra External ID |
+| IaC | CloudFormation | Terraform | Bicep |
 | サムネイルトリガー | S3 Event | Eventarc | Blob Trigger |
