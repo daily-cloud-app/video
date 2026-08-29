@@ -473,14 +473,18 @@ sp_object_id() {
 }
 
 echo "  Ensuring the app has a service principal..."
-SP_EXISTS="$(sp_object_id)"
-if [ -z "$SP_EXISTS" ]; then
-    echo "  Creating service principal..."
+# A freshly created app registration is eventually consistent across Graph
+# replicas. A single "create SP" POST can land on a replica that has not yet
+# seen the app (404), leaving the SP permanently uncreated while the GET loop
+# waits forever. Retry BOTH the create POST and the existence GET on every
+# attempt (~3 minutes = 36 * 5s), so a replication gap on any one attempt is
+# recovered by the next.
+SP_EXISTS=""
+for _ in $(seq 1 36); do
+    SP_EXISTS="$(sp_object_id)"
+    [ -n "$SP_EXISTS" ] && break
     graph_call POST "https://graph.microsoft.com/v1.0/servicePrincipals" \
         "{\"appId\":\"$ENTRA_CLIENT_ID\"}" >/dev/null 2>&1 || true
-fi
-# Wait for the service principal to be resolvable before creating the flow.
-for _ in $(seq 1 12); do
     SP_EXISTS="$(sp_object_id)"
     [ -n "$SP_EXISTS" ] && break
     sleep 5
