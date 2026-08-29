@@ -536,6 +536,8 @@ if [ -z "$GRAPH_RES_SP_ID" ]; then
     echo "  WARNING: Could not resolve the Microsoft Graph service principal; skipping consent."
 else
     GRANT_BODY="{\"clientId\":\"$APP_SP_ID\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"$GRAPH_RES_SP_ID\",\"scope\":\"openid offline_access profile\"}"
+    echo "  [debug] GRAPH_RES_SP_ID=$GRAPH_RES_SP_ID APP_SP_ID=$APP_SP_ID"
+    echo "  [debug] SP-nav grants raw (first 300): $(graph_call GET "https://graph.microsoft.com/v1.0/servicePrincipals/$APP_SP_ID/oauth2PermissionGrants" 2>&1 | head -c 300)"
     CONSENT_OK=""
     for _ in $(seq 1 48); do
         # Already present (from a previous attempt or run)? Done.
@@ -544,18 +546,22 @@ else
             break
         fi
         # The directory organization object must exist before writes succeed.
-        ORG_READY=$(graph_call GET "https://graph.microsoft.com/v1.0/organization" 2>/dev/null \
+        ORG_RAW=$(graph_call GET "https://graph.microsoft.com/v1.0/organization" 2>&1 || true)
+        echo "  [debug] attempt: org raw (first 200 chars): $(printf '%s' "$ORG_RAW" | head -c 200)"
+        ORG_READY=$(printf '%s' "$ORG_RAW" \
             | python3 -c "import sys,json
 try:
     print('yes' if (json.load(sys.stdin).get('value') or []) else 'no')
 except Exception:
     print('no')" 2>/dev/null || echo "no")
+        echo "  [debug] ORG_READY=$ORG_READY"
         if [ "$ORG_READY" != "yes" ]; then
             sleep 10
             continue
         fi
         # Attempt the grant. Don't trust the POST status: verify by existence.
-        graph_call POST "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" "$GRANT_BODY" >/dev/null 2>&1 || true
+        POST_RAW=$(graph_call POST "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" "$GRANT_BODY" 2>&1 || true)
+        echo "  [debug] grant POST raw (first 300 chars): $(printf '%s' "$POST_RAW" | head -c 300)"
         if [ -n "$(grant_exists)" ]; then
             CONSENT_OK="yes"
             break
