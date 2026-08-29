@@ -514,10 +514,17 @@ echo "  Granting admin consent to the app (OpenID Connect scopes)..."
 GRAPH_RES_SP_ID=$(graph_call GET \
     "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$GRAPH_MSGRAPH_APPID')" 2>/dev/null | json_get id)
 
-# Returns the existing grant id (or empty) for our client/resource pair.
+# Returns non-empty when an oauth2PermissionGrant exists for our SP.
+#
+# We read the SP navigation property servicePrincipals/{id}/oauth2PermissionGrants
+# instead of the collection with $filter. On a freshly created tenant the
+# $filter index lags behind replication for minutes, so a filtered query
+# returns an empty list even when the grant already exists — which made the
+# old check report a false failure and burn the whole retry window. The
+# navigation property reflects the grant immediately.
 grant_exists() {
     graph_call GET \
-        "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?\$filter=clientId eq '$APP_SP_ID' and resourceId eq '$GRAPH_RES_SP_ID'" 2>/dev/null \
+        "https://graph.microsoft.com/v1.0/servicePrincipals/$APP_SP_ID/oauth2PermissionGrants" 2>/dev/null \
         | python3 -c "import sys,json
 try:
     print((json.load(sys.stdin).get('value') or [{}])[0].get('id',''))
