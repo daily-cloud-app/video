@@ -536,42 +536,76 @@ if [ -z "$GRAPH_RES_SP_ID" ]; then
     echo "  WARNING: Could not resolve the Microsoft Graph service principal; skipping consent."
 else
     GRANT_BODY="{\"clientId\":\"$APP_SP_ID\",\"consentType\":\"AllPrincipals\",\"resourceId\":\"$GRAPH_RES_SP_ID\",\"scope\":\"openid offline_access profile\"}"
-    echo "  [debug] GRAPH_RES_SP_ID=$GRAPH_RES_SP_ID APP_SP_ID=$APP_SP_ID"
-    echo "  [debug] SP-nav grants raw (first 300): $(graph_call GET "https://graph.microsoft.com/v1.0/servicePrincipals/$APP_SP_ID/oauth2PermissionGrants" 2>&1 | head -c 300)"
+    # Consent is created by POSTing the grant directly and verifying existence.
+    #
+    # We do NOT gate this on GET /organization: that requires the app-only
+    # Organization.Read.All permission (not granted to the automation app), so
+    # it returns 403 forever and the write is never attempted. Instead, POST
+    # directly and classify the HTTP status:
+    #   - transient (freshly created tenant still initializing): 404
+    #     Directory_ObjectNotFound, 429, 5xx  -> sleep and retry
+    #   - 409 Conflict: the grant already exists -> re-check existence
+    #   - hard failure: 400 / 401 / 403 -> log the body and stop retrying
+    # DelegatedPermissionGrant.ReadWrite.All is sufficient for this POST per the
+    # Graph docs; no additional Graph permission is needed here.
     CONSENT_OK=""
+    CONSENT_FATAL=""
     for _ in $(seq 1 48); do
-        # Already present (from a previous attempt or run)? Done.
+        # Already present (earlier attempt, or a prior run)? Done.
         if [ -n "$(grant_exists)" ]; then
             CONSENT_OK="yes"
             break
         fi
-        # The directory organization object must exist before writes succeed.
-        ORG_RAW=$(graph_call GET "https://graph.microsoft.com/v1.0/organization" 2>&1 || true)
-        echo "  [debug] attempt: org raw (first 200 chars): $(printf '%s' "$ORG_RAW" | head -c 200)"
-        ORG_READY=$(printf '%s' "$ORG_RAW" \
-            | python3 -c "import sys,json
-try:
-    print('yes' if (json.load(sys.stdin).get('value') or []) else 'no')
-except Exception:
-    print('no')" 2>/dev/null || echo "no")
-        echo "  [debug] ORG_READY=$ORG_READY"
-        if [ "$ORG_READY" != "yes" ]; then
-            sleep 10
-            continue
-        fi
-        # Attempt the grant. Don't trust the POST status: verify by existence.
-        POST_RAW=$(graph_call POST "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" "$GRANT_BODY" 2>&1 || true)
-        echo "  [debug] grant POST raw (first 300 chars): $(printf '%s' "$POST_RAW" | head -c 300)"
-        if [ -n "$(grant_exists)" ]; then
-            CONSENT_OK="yes"
-            break
-        fi
+        # POST the grant and capture HTTP status + body (last line = status).
+        RAW=$(curl -sS -w $'\n%{http_code}' -X POST \
+            "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" \
+            -H "Authorization: Bearer $GRAPH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$GRANT_BODY" 2>/dev/null || true)
+        HTTP_CODE="${RAW##*$'\n'}"
+        RESP="${RAW%$'\n'*}"
+        case "$HTTP_CODE" in
+            2*)
+                CONSENT_OK="yes"
+                break
+                ;;
+            409)
+                # Already exists — confirm via the navigation property.
+                if [ -n "$(grant_exists)" ]; then
+                    CONSENT_OK="yes"
+                    break
+                fi
+                ;;
+            404|429|5*)
+                # Directory still initializing / throttled / transient. The
+                # grant may still have landed, so re-check before waiting.
+                if [ -n "$(grant_exists)" ]; then
+                    CONSENT_OK="yes"
+                    break
+                fi
+                ;;
+            400|401|403)
+                echo "  ERROR: admin consent POST failed with HTTP $HTTP_CODE"
+                [ -n "$RESP" ] && echo "  Response: $(printf '%s' "$RESP" | head -c 500)"
+                CONSENT_FATAL="yes"
+                break
+                ;;
+            *)
+                # Unknown/empty status — treat as transient and re-check.
+                if [ -n "$(grant_exists)" ]; then
+                    CONSENT_OK="yes"
+                    break
+                fi
+                ;;
+        esac
         sleep 10
     done
     if [ -n "$CONSENT_OK" ]; then
         echo "  Admin consent granted."
+    elif [ -n "$CONSENT_FATAL" ]; then
+        echo "  WARNING: Admin consent could not be granted (see error above); sign-in may fail with consent_required."
     else
-        echo "  WARNING: Failed to grant admin consent; sign-in may fail with consent_required."
+        echo "  WARNING: Failed to grant admin consent after retries; sign-in may fail with consent_required."
     fi
 fi
 
