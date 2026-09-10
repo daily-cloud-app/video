@@ -30,7 +30,7 @@ The app provides the client application only. You build and manage the cloud env
 - **Sharing** — Share videos with other users in the same cloud environment by label
 
 Sample setup guides for several cloud providers are available in the infrastructure repository:
-- https://github.com/daily-cloud-app/video
+- [https://github.com/daily-cloud-app/video](https://github.com/daily-cloud-app/video)
 
 ### Getting started
 
@@ -66,7 +66,7 @@ For questions or issues, please use [GitHub Issues](https://github.com/daily-clo
 - **共有** — 同じクラウド内の他のユーザーとラベル単位で動画を共有
 
 いくつかのクラウドプロバイダー向けに、サンプルの環境構築手順を公開しています。
-- https://github.com/daily-cloud-app/video
+- [https://github.com/daily-cloud-app/video](https://github.com/daily-cloud-app/video)
 
 ### 使い方
 
