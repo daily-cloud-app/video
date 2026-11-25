@@ -53,7 +53,7 @@ resource "google_cloudfunctions2_function" "api" {
     available_memory      = "256M"
     timeout_seconds       = 60
     ingress_settings      = "ALLOW_ALL"
-    max_instance_count    = 100
+    max_instance_count    = 10
     service_account_email = google_service_account.runtime.email
 
     environment_variables = {
@@ -112,7 +112,7 @@ resource "google_cloudfunctions2_function" "trigger" {
   service_config {
     available_memory      = "512M"
     timeout_seconds       = 120
-    max_instance_count    = 100
+    max_instance_count    = 10
     service_account_email = google_service_account.runtime.email
 
     environment_variables = {
